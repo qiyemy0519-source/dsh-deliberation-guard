@@ -1,0 +1,52 @@
+{
+  "name": "dsh-deliberation-guard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deliberation-budget guard for DeepSeek Harness: interrupts a step that burns its whole budget on pure reasoning and nudges the model to answer with what it already knows.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "test/guard.test.mjs"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "guard",
+    "deliberation"
+  ],
+  "license": "MIT",
+  "author": "wangjian",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qiyemy0519-source/dsh-deliberation-guard.git"
+  },
+  "homepage": "https://github.com/qiyemy0519-source/dsh-deliberation-guard#readme",
+  "bugs": {
+    "url": "https://github.com/qiyemy0519-source/dsh-deliberation-guard/issues"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node test/guard.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  }
+}

@@ -1,0 +1,5 @@
+# 只登记插件行；默认值全部由 index.js 的 Config 声明，这里不要写 config:
+# （DSH 首次保存设置时会把 patch 里的 config 整段复制到用户配置，导致每一项都显示为已覆盖）。
+- insert:
+    - id: deliberation-guard
+      name: dsh-deliberation-guard
