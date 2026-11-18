@@ -41,6 +41,27 @@ const SOURCE_KIND = 'deliberation-guard'
 /** Bound on the notice summary, matching dsh-llm's CONTEXT_SUMMARY_MAX_CHARS. */
 const SUMMARY_MAX_CHARS = 120
 
+/**
+ * Session-projection key holding one conversation's control overrides. The
+ * projection folds the log-only `command/run` records this plugin writes, so a
+ * resume or a fork reconstructs the same control state without extra storage.
+ */
+const CONTROL_KEY = 'deliberationGuard'
+
+/** Command name (without the slash) the per-conversation control writes through. */
+const CONTROL_COMMAND = 'guard'
+
+/**
+ * Budget presets a person can name instead of milliseconds. `budgetMs` is the
+ * patience value automatic mode waits before interrupting; these names keep the
+ * common choices short. They are the plugin's own product defaults, not
+ * deployment-varying tunables, so they stay constants.
+ */
+const BUDGET_PRESETS = Object.freeze({ fast: 15000, normal: 45000, slow: 90000, patient: 120000 })
+
+/** The empty per-conversation override: automatic mode uses the configured budget. */
+const NO_OVERRIDE = Object.freeze({ long: false, budgetMs: null })
+
 let z
 try {
   z = (await import('@deepseek-ai/schemastery')).default
@@ -228,6 +249,177 @@ function accumulate(attempt, chunk) {
 }
 
 /**
+ * Parse one `/guard` argument string into a control directive.
+ * @param raw - verbatim text after the `guard` command name.
+ * @returns a directive for {@link applyDirective}, or an `error` directive.
+ */
+function parseControl(raw) {
+  const text = typeof raw === 'string' ? raw.trim() : ''
+  if (text === '') return { kind: 'report' }
+  const parts = text.split(/\s+/u)
+  const head = parts[0]
+  if (head === 'long') {
+    if (parts.length === 1) return { kind: 'long', value: 'toggle' }
+    if (parts.length === 2 && parts[1] === 'on') return { kind: 'long', value: true }
+    if (parts.length === 2 && parts[1] === 'off') return { kind: 'long', value: false }
+    return { kind: 'error', text: '`long` takes `on`, `off`, or no argument' }
+  }
+  if (head === 'budget') {
+    if (parts.length !== 2) {
+      return { kind: 'error', text: `\`budget\` takes one value: milliseconds, a preset (${Object.keys(BUDGET_PRESETS).join(', ')}), or \`default\`` }
+    }
+    // `default` clears only the budget override; `reset` also clears long-thinking.
+    if (parts[1] === 'default') return { kind: 'budget', value: null }
+    const preset = BUDGET_PRESETS[parts[1]]
+    if (preset !== undefined) return { kind: 'budget', value: preset }
+    // Decimal milliseconds only: `Number()` would also accept `1e3`, `0x10`, `-0`,
+    // `1_000`, and `Infinity`, none of which are in the documented grammar.
+    if (!/^\d+$/u.test(parts[1])) {
+      return { kind: 'error', text: `budget must be a whole number of milliseconds, a preset, or \`default\`; got "${parts[1]}"` }
+    }
+    return { kind: 'budget', value: Number(parts[1]) }
+  }
+  if (head === 'reset') {
+    if (parts.length !== 1) return { kind: 'error', text: '`reset` takes no argument' }
+    return { kind: 'reset' }
+  }
+  return {
+    kind: 'error',
+    text: `unknown \`guard\` argument "${head}" (use long, budget <ms|${Object.keys(BUDGET_PRESETS).join('|')}>, or reset)`,
+  }
+}
+
+/**
+ * Apply one parsed directive to a control state.
+ * @param state - the current `{ long, budgetMs }` control state.
+ * @param directive - output of {@link parseControl}.
+ * @returns the next control state (same reference for a report or an error).
+ */
+function applyDirective(state, directive) {
+  switch (directive.kind) {
+    case 'long':
+      return {
+        long: directive.value === 'toggle' ? !state.long : directive.value,
+        budgetMs: state.budgetMs,
+      }
+    case 'budget':
+      // A `null` value clears the override back to the configured default.
+      return { long: state.long, budgetMs: directive.value }
+    case 'reset':
+      return { long: false, budgetMs: null }
+    default:
+      return state
+  }
+}
+
+/**
+ * Fold one committed session event into one conversation's control state.
+ * @param state - state covering all prior events.
+ * @param event - the next committed session event.
+ * @returns the next state, or the same reference for an event this unit ignores.
+ */
+function foldControl(state, event) {
+  if (event === null || typeof event !== 'object') return state
+  if (event.type !== 'command/run') return state
+  const data = event.data
+  if (data === null || typeof data !== 'object') return state
+  if (data.name !== CONTROL_COMMAND) return state
+  const directive = parseControl(data.args)
+  if (directive.kind === 'report' || directive.kind === 'error') return state
+  return applyDirective(state, directive)
+}
+
+/**
+ * Validate one control value. The projection registry only needs `.parse`; a
+ * hand-rolled face keeps this plugin's runtime imports at `node:crypto` alone
+ * instead of adding `zod` to a `link:`-installed package's resolution.
+ * @param value - candidate state or wire value.
+ * @returns the value when valid, otherwise `undefined`.
+ */
+function readControlValue(value) {
+  if (value === null || typeof value !== 'object') return undefined
+  if (typeof value.long !== 'boolean') return undefined
+  const budgetMs = value.budgetMs
+  if (budgetMs !== null && (typeof budgetMs !== 'number' || !Number.isFinite(budgetMs) || budgetMs < 0)) {
+    return undefined
+  }
+  return value
+}
+
+/** Schema face shared by the projection's state and wire view. */
+const controlSchema = Object.freeze({
+  parse(value) {
+    const parsed = readControlValue(value)
+    if (parsed === undefined) {
+      throw new Error(`${name}: invalid ${CONTROL_KEY} value ${JSON.stringify(value)}`)
+    }
+    return parsed
+  },
+})
+
+/**
+ * Read one agent's per-conversation override. A host without the optional
+ * command/projection layers has no handle, and a session the reader cannot fold
+ * falls back to the configured budget rather than failing the model stream.
+ * @param handle - the projection handle, or `undefined` when the layer is absent.
+ * @param agent - the agent whose session carries the control records.
+ * @returns the `{ long, budgetMs }` override.
+ */
+function readOverride(handle, agent) {
+  if (handle === undefined) return NO_OVERRIDE
+  const session = agent?.session
+  if (session === null || typeof session !== 'object') return NO_OVERRIDE
+  try {
+    const state = handle.stateOf(session)
+    const raw = state === null || typeof state !== 'object' ? undefined : state
+    if (raw === undefined) return NO_OVERRIDE
+    return {
+      long: raw.long === true,
+      budgetMs: typeof raw.budgetMs === 'number' && Number.isFinite(raw.budgetMs) && raw.budgetMs >= 0
+        ? raw.budgetMs
+        : null,
+    }
+  } catch {
+    // A session the projection cannot fold (for example a mock or an unmaterialized
+    // host session) must not block the guard; the configured budget still applies.
+    return NO_OVERRIDE
+  }
+}
+
+/**
+ * Render one control state for the command's settlement text.
+ * @param state - the control state to describe.
+ * @param defaultBudgetMs - the resolved `Config.budgetMs` backing `budgetMs: null`.
+ * @returns the settlement text.
+ */
+function describeControl(state, defaultBudgetMs) {
+  const long = state.long ? 'on' : 'off'
+  const budget = state.budgetMs === null ? `default (${defaultBudgetMs} ms)` : `${state.budgetMs} ms`
+  return `long-thinking ${long}; budget ${budget}`
+}
+
+/**
+ * Read the control state a `/guard` settlement should report. `command/run` is
+ * appended before the handler runs, so the projection already reflects this
+ * invocation: re-applying the directive would double-apply a toggle and report
+ * the opposite of what happened. The directive is only replayed when the
+ * session cannot be folded at all, where the report is best-effort.
+ * @param handle - the projection handle (always present in the handler).
+ * @param agent - the agent whose session carries the command records.
+ * @param directive - the parsed directive, used only by the fallback.
+ * @returns the state to describe.
+ */
+function settlementControl(handle, agent, directive) {
+  try {
+    const parsed = readControlValue(handle.stateOf(agent?.session))
+    if (parsed !== undefined) return parsed
+  } catch {
+    // Unfoldable session: report the locally computed result instead.
+  }
+  return applyDirective(NO_OVERRIDE, directive)
+}
+
+/**
  * Install the guard's stream listener.
  * @param ctx - plugin context; the listener is registered through `ctx.on`, so
  *   unloading the plugin removes it and no per-agent state outlives the fiber.
@@ -235,6 +427,13 @@ function accumulate(attempt, chunk) {
  */
 export function apply(ctx, config) {
   const settings = resolveConfig(config)
+
+  /**
+   * The per-conversation projection handle. Absent in a host that composes
+   * neither the command registry nor the projection registry, in which case the
+   * guard keeps working globally on the configured budget alone.
+   */
+  let controlHandle
 
   // Per-agent observation state. A WeakMap keeps one entry per live agent and
   // lets both the attempt record and the cooldown die with the agent.
@@ -283,8 +482,12 @@ export function apply(ctx, config) {
     if (attempt.fired) return
     if (attempt.hasText || attempt.hasToolCall) return
     if (attempt.reasoningChars < settings.minReasoningChars) return
+    // Per-conversation control. `long` means this conversation opted out of
+    // interruptions entirely; `budgetMs` overrides the configured patience.
+    const override = readOverride(controlHandle, agent)
+    if (override.long) return
     const now = Date.now()
-    if (now - attempt.startedAt < settings.budgetMs) return
+    if (now - attempt.startedAt < (override.budgetMs ?? settings.budgetMs)) return
     if (now < state.cooldownUntil) return
     if (!settings.includeSubagents && isSubagent(agent)) return
     // Claim the attempt and start the cooldown before acting, so a frame that
@@ -338,5 +541,46 @@ export function apply(ctx, config) {
       // contained here and reported, never propagated into the attempt it observes.
       report(ctx, `assistant-stream observation failed: ${describeError(error)}`)
     }
+  })
+
+  // Optional per-conversation control. A host that composes neither registry
+  // keeps the guard's global behavior; both registries are optional children of
+  // this fiber, so their absence is a supported configuration rather than an error.
+  if (typeof ctx.inject !== 'function') return
+  ctx.inject(['commands', 'sessionProjections'], (scope) => {
+    scope.sessionProjections.register({
+      key: CONTROL_KEY,
+      stateVersion: 1,
+      stateSchema: controlSchema,
+      init: () => NO_OVERRIDE,
+      apply: foldControl,
+      wire: { viewSchema: controlSchema, view: state => state, summary: true },
+    }).then((handle) => {
+      try {
+        scope.commands.register({
+          name: CONTROL_COMMAND,
+          description: 'Per-conversation deliberation guard: long-thinking and patience budget',
+          input: {
+            hint: `[long [on|off]|budget <ms|${Object.keys(BUDGET_PRESETS).join('|')}|default>|reset]`,
+          },
+          handler: ({ agent, rawInput }) => {
+            const directive = parseControl(rawInput)
+            if (directive.kind === 'error') return { kind: 'error', text: directive.text }
+            return {
+              kind: 'success',
+              text: describeControl(settlementControl(handle, agent, directive), settings.budgetMs),
+            }
+          },
+        })
+      } catch (error) {
+        // The projection is registered but no `/guard` line can write through it,
+        // so the guard must not read it: the handle is never installed.
+        report(scope, `per-conversation control: /guard command unavailable, overrides stay unread: ${describeError(error)}`)
+        return
+      }
+      controlHandle = handle
+    }).catch((error) => {
+      report(scope, `per-conversation control unavailable: ${describeError(error)}`)
+    })
   })
 }

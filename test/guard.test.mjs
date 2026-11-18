@@ -7,6 +7,7 @@
  * configuration rather than a failure.
  */
 
+import { readFile } from 'node:fs/promises'
 import { apply, name, Config } from '../index.js'
 
 const EVENT = 'agent/assistant-stream'
@@ -412,6 +413,312 @@ console.log(`schemastery Config present: ${Config !== undefined}`)
   const kept = createAgent({ inbox: [queued] })
   kept.cancel({ kind: 'user' }, { keepInbox: true })
   check('the fake inbox retains with keepInbox', kept.inbox.length === 1, JSON.stringify(kept.inbox))
+}
+
+// ---------------------------------------------------------------------------
+// (k) per-conversation control: projection, command, and the projection-aware
+//     fire check. The optional layers are mocked through `ctx.inject`.
+// ---------------------------------------------------------------------------
+
+/** One committed `command/run` record for the guard command. */
+const guardRun = (args, name = 'guard') => ({
+  type: 'command/run', seq: 1, time: 1,
+  data: { commandId: 'c1', name, args, source: { kind: 'user' } },
+})
+
+/**
+ * A context that also composes the optional command and projection layers.
+ * `value` is the control state the fake handle reads, or a function returning it.
+ */
+function createControlHarness({ value = { long: false, budgetMs: null }, registerFails = false, commandRegisterFails = false } = {}) {
+  const harness = createContext()
+  const captured = { deps: undefined, projection: undefined, command: undefined, scopes: 0 }
+  let current = value
+  const handle = { stateOf: () => (typeof current === 'function' ? current() : current) }
+  const scope = {
+    logger: harness.ctx.logger,
+    commands: {
+      register: (definition) => {
+        if (commandRegisterFails) throw new Error('command name already registered')
+        captured.command = definition
+        return () => {}
+      },
+    },
+    sessionProjections: {
+      register: (definition) => {
+        captured.projection = definition
+        return registerFails ? Promise.reject(new Error('registry refused')) : Promise.resolve(handle)
+      },
+    },
+  }
+  harness.ctx.inject = (deps, callback) => { captured.deps = deps; captured.scopes += 1; callback(scope) }
+  harness.captured = captured
+  harness.setValue = (next) => { current = next }
+  return harness
+}
+
+/** Flush the microtask that installs the projection handle. */
+const settleControl = async () => { await Promise.resolve(); await Promise.resolve() }
+
+/** Drive one attempt with enough reasoning to be eligible for interruption. */
+function longReasoningAttempt(harness, agent, attemptId = 'a1') {
+  harness.emit(agent, startFrame(attemptId, 1, 1))
+  harness.emit(agent, chunkFrame(attemptId, { type: 'reasoning-delta', text: 'x'.repeat(50) }))
+}
+
+{
+  const h = createControlHarness()
+  apply(h.ctx, { budgetMs: 1, minReasoningChars: 1, cooldownMs: 0 })
+  await settleControl()
+  const { captured } = h
+  check('(k) the optional layers are requested by name', JSON.stringify(captured.deps) === '["commands","sessionProjections"]', JSON.stringify(captured.deps))
+  check('(k) the projection registers under the control key', captured.projection?.key === 'deliberationGuard', String(captured.projection?.key))
+  check('(k) the projection declares stateVersion 1', captured.projection?.stateVersion === 1, String(captured.projection?.stateVersion))
+  check('(k) the projection starts with no override', JSON.stringify(captured.projection.init()) === '{"long":false,"budgetMs":null}', JSON.stringify(captured.projection.init()))
+  check('(k) the projection exposes a wire view', typeof captured.projection.wire?.view === 'function')
+  check('(k) the command registers as guard', captured.command?.name === 'guard', String(captured.command?.name))
+  check('(k) the command advertises its grammar', captured.command?.input?.hint.includes('long'), String(captured.command?.input?.hint))
+
+  const fold = captured.projection.apply
+  const start = captured.projection.init()
+  const otherEvent = { type: 'turn/start', seq: 1, time: 1, data: { turn: 1 } }
+  check('(k) an unrelated event keeps the same state reference', fold(start, otherEvent) === start)
+  check('(k) another command keeps the same state reference', fold(start, guardRun('', 'permission')) === start)
+  check('(k) a bare report keeps the same state reference', fold(start, guardRun('')) === start)
+  check('(k) an unknown argument keeps the same state reference', fold(start, guardRun(' explode')) === start)
+  const longOn = fold(start, guardRun(' long'))
+  check('(k) /guard long toggles long-thinking on', longOn.long === true && longOn.budgetMs === null, JSON.stringify(longOn))
+  check('(k) /guard long toggles back off', fold(longOn, guardRun(' long')).long === false)
+  check('(k) /guard long on sets it explicitly', fold(start, guardRun(' long on')).long === true)
+  check('(k) /guard long off sets it explicitly', fold(longOn, guardRun(' long off')).long === false)
+  check('(k) /guard long rejects a third word', fold(start, guardRun(' long maybe')) === start)
+  check('(k) /guard budget records milliseconds', fold(start, guardRun(' budget 5000')).budgetMs === 5000)
+  check('(k) /guard budget accepts a preset name', fold(start, guardRun(' budget patient')).budgetMs === 120000)
+  check('(k) /guard budget accepts the 90s preset name', fold(start, guardRun(' budget slow')).budgetMs === 90000)
+  const clearedBudget = fold({ long: true, budgetMs: 5000 }, guardRun(' budget default'))
+  check('(k) /guard budget default clears only the budget and keeps long-thinking',
+    clearedBudget.long === true && clearedBudget.budgetMs === null, JSON.stringify(clearedBudget))
+  check('(k) /guard budget rejects a negative value', fold(start, guardRun(' budget -1')) === start)
+  check('(k) /guard budget rejects exponent notation', fold(start, guardRun(' budget 1e3')) === start)
+  check('(k) /guard budget rejects hexadecimal notation', fold(start, guardRun(' budget 0x10')) === start)
+  check('(k) /guard budget rejects negative zero', fold(start, guardRun(' budget -0')) === start)
+  check('(k) /guard budget rejects numeric separators', fold(start, guardRun(' budget 1_000')) === start)
+  check('(k) /guard budget rejects a unit suffix', fold(start, guardRun(' budget 45000ms')) === start)
+  check('(k) /guard budget rejects a bare word', fold(start, guardRun(' budget soon')) === start)
+  const reset = fold({ long: true, budgetMs: 5000 }, guardRun(' reset'))
+  check('(k) /guard reset clears both overrides', reset.long === false && reset.budgetMs === null, JSON.stringify(reset))
+  check('(k) the wire view reuses the state reference', captured.projection.wire.view(start) === start)
+  check('(k) the state schema accepts the empty override', captured.projection.stateSchema.parse({ long: false, budgetMs: null }).long === false)
+  let rejectedLong = false
+  try { captured.projection.stateSchema.parse({ long: 'yes', budgetMs: null }) } catch { rejectedLong = true }
+  check('(k) the state schema rejects a non-boolean long', rejectedLong)
+  let rejectedBudget = false
+  try { captured.projection.stateSchema.parse({ long: false, budgetMs: -1 }) } catch { rejectedBudget = true }
+  check('(k) the state schema rejects a negative budget', rejectedBudget)
+  let rejectedShape = false
+  try { captured.projection.stateSchema.parse(null) } catch { rejectedShape = true }
+  check('(k) the state schema rejects a non-object', rejectedShape)
+}
+
+{
+  const h = createControlHarness({ value: { long: false, budgetMs: null } })
+  apply(h.ctx, {})
+  await settleControl()
+  const agent = createAgent()
+  const run = (rawInput) => h.captured.command.handler({ agent, rawInput })
+  check('(k) /guard reports the folded state', run('').kind === 'success' && run('').text.includes('long-thinking off'), run('').text)
+
+  // `command/run` is appended before the handler runs, so the projection has
+  // already folded this invocation. The mock publishes that post-fold state;
+  // a toggle must be reported as-is, never applied a second time.
+  h.setValue({ long: true, budgetMs: null })
+  check('(k) a toggle reports the post-fold state instead of flipping back', run(' long').text.includes('long-thinking on'), run(' long').text)
+  check('(k) /guard long on reports the post-fold state', run(' long on').text.includes('long-thinking on'), run(' long on').text)
+  h.setValue({ long: false, budgetMs: 15000 })
+  check('(k) /guard budget fast reports the preset value', run(' budget fast').text.includes('15000 ms'), run(' budget fast').text)
+  h.setValue({ long: false, budgetMs: null })
+  check('(k) /guard reset reports the default budget', run(' reset').text.includes('default'), run(' reset').text)
+
+  const bad = run(' explode')
+  check('(k) an unknown argument is a command error', bad.kind === 'error' && bad.text.includes('explode'), JSON.stringify(bad))
+}
+
+{
+  // D2: the status line must name the resolved Config.budgetMs, not the schema default.
+  const h = createControlHarness({ value: { long: false, budgetMs: null } })
+  apply(h.ctx, { budgetMs: 90000 })
+  await settleControl()
+  const agent = createAgent()
+  const run = (rawInput) => h.captured.command.handler({ agent, rawInput })
+  check('(k) the status line names the configured default, not the schema default',
+    run('').text.includes('default (90000 ms)'), run('').text)
+  h.setValue({ long: true, budgetMs: null })
+  check('(k) budget default reports the configured default and keeps long-thinking',
+    run(' budget default').text.includes('long-thinking on') && run(' budget default').text.includes('default (90000 ms)'),
+    run(' budget default').text)
+}
+
+{
+  const h = createControlHarness({ value: { long: true, budgetMs: 0 } })
+  apply(h.ctx, { budgetMs: 0, minReasoningChars: 0, cooldownMs: 0 })
+  await settleControl()
+  const agent = createAgent()
+  longReasoningAttempt(h, agent)
+  check('(k) long-thinking suppresses the interruption', countOf(agent, 'cancel') === 0, `got ${countOf(agent, 'cancel')}`)
+}
+
+{
+  const h = createControlHarness({ value: { long: false, budgetMs: 60000 } })
+  apply(h.ctx, { budgetMs: 0, minReasoningChars: 0, cooldownMs: 0 })
+  await settleControl()
+  const agent = createAgent()
+  longReasoningAttempt(h, agent)
+  check('(k) a larger per-conversation budget suppresses the interruption', countOf(agent, 'cancel') === 0, `got ${countOf(agent, 'cancel')}`)
+}
+
+{
+  const h = createControlHarness({ value: { long: false, budgetMs: 0 } })
+  apply(h.ctx, { budgetMs: 60000, minReasoningChars: 0, cooldownMs: 0 })
+  await settleControl()
+  const agent = createAgent()
+  longReasoningAttempt(h, agent)
+  check('(k) a zero per-conversation budget fires against the configured one', countOf(agent, 'cancel') === 1, `got ${countOf(agent, 'cancel')}`)
+}
+
+{
+  const h = createControlHarness({ value: () => { throw new Error('unfoldable session') } })
+  apply(h.ctx, { budgetMs: 0, minReasoningChars: 0, cooldownMs: 0 })
+  await settleControl()
+  const agent = createAgent()
+  longReasoningAttempt(h, agent)
+  check('(k) an unfoldable session falls back to the configured budget', countOf(agent, 'cancel') === 1, `got ${countOf(agent, 'cancel')}`)
+}
+
+{
+  const h = createControlHarness({ registerFails: true })
+  apply(h.ctx, { budgetMs: 0, minReasoningChars: 0, cooldownMs: 0 })
+  await settleControl()
+  const agent = createAgent()
+  longReasoningAttempt(h, agent)
+  check('(k) a refused control registration still guards on the configured budget', countOf(agent, 'cancel') === 1, `got ${countOf(agent, 'cancel')}`)
+  check('(k) the refused registration is reported', h.reports.some(r => r.includes('per-conversation control unavailable')), JSON.stringify(h.reports))
+}
+
+{
+  // D5: the projection registers, then the command layer fails. The handle must
+  // stay uninstalled, so the guard ignores the projection the user cannot write.
+  const h = createControlHarness({ value: { long: true, budgetMs: null }, commandRegisterFails: true })
+  apply(h.ctx, { budgetMs: 0, minReasoningChars: 0, cooldownMs: 0 })
+  await settleControl()
+  const agent = createAgent()
+  longReasoningAttempt(h, agent)
+  check('(k) a failed command registration leaves the projection unread even when it says long', countOf(agent, 'cancel') === 1, `got ${countOf(agent, 'cancel')}`)
+  check('(k) the failed command layer is reported separately',
+    h.reports.some(r => r.includes('/guard command unavailable')), JSON.stringify(h.reports))
+  check('(k) the projection layer is not reported as unavailable',
+    !h.reports.some(r => r.includes('per-conversation control unavailable')), JSON.stringify(h.reports))
+}
+
+{
+  // The browser half is a module-loader factory, not an importable module:
+  // execute it against a stubbed loader and drive its registration and control.
+  const loaded = []
+  globalThis.window = { __ModuleLoader__: { load: entry => loaded.push(entry) } }
+  try {
+    await import('../client.js?control-test')
+  } finally {
+    delete globalThis.window
+  }
+  check('(k) the client factory registers exactly one loader entry', loaded.length === 1, String(loaded.length))
+  const entry = loaded[0]
+  check('(k) the client factory id equals the package name', entry?.id === 'dsh-deliberation-guard', String(entry?.id))
+
+  let slot = undefined
+  const localeRegistrations = []
+  const fakeReact = { createElement: (type, props, children) => ({ type, props: props ?? {}, children }) }
+  const clientPlugin = entry.factory(name => (name === 'react' ? fakeReact : undefined))
+  const clientCtx = {
+    effect: fn => fn(),
+    locale: { register: (ns, dicts) => { localeRegistrations.push([ns, dicts]); return () => {} } },
+    sessions: {
+      binding: () => undefined,
+      subagentAddress: () => undefined,
+    },
+    slots: {
+      inject: (_name, callback) => callback(),
+      register: (options, component) => { slot = { options, component }; return () => {} },
+    },
+  }
+  clientPlugin.apply(clientCtx)
+  check('(k) the client registers into conversation.input.right', slot?.options?.name === 'conversation.input.right', String(slot?.options?.name))
+  check('(k) the client registration declares the locale namespace', slot?.options?.locale === 'deliberation.guard', String(slot?.options?.locale))
+  check('(k) the client registers its dictionaries under the slot namespace',
+    localeRegistrations.length === 1 && localeRegistrations[0][0] === 'deliberation.guard'
+      && localeRegistrations[0][1].zh['long.label'] === '长思考' && localeRegistrations[0][1].en['long.label'] === 'Long thinking',
+    JSON.stringify(localeRegistrations.map(r => r[0])))
+
+  const face = slot.options.inject('session-1')
+  check('(k) the slot inject factory returns an observable face without throwing', typeof face?.hooks?.guard?.getSnapshot === 'function')
+  check('(k) the missing binding yields an inert observable', face.hooks.guard.getSnapshot() === undefined)
+
+  const throwingCtx = {
+    ...clientCtx,
+    sessions: { binding: () => { throw new Error('not materialized') } },
+  }
+  clientPlugin.apply(throwingCtx)
+  let safe = undefined
+  try { safe = slot.options.inject('session-2') } catch { safe = undefined }
+  check('(k) the slot inject factory never throws on an unmaterialized session', safe !== undefined && typeof safe?.hooks?.guard?.getSnapshot === 'function')
+
+  const element = slot.component({ t: key => key, useGuard: select => select({ long: true, budgetMs: null }), submit: () => {} })
+  check('(k) the control renders a toggle and a budget picker', element !== null && element.children.length === 2, JSON.stringify(element?.children?.length))
+  check('(k) the budget picker is inert while long thinking is on', element.children[1].props.disabled === true)
+  check('(k) the toggle reports its pressed state', element.children[0].props['aria-pressed'] === true)
+
+  const relaxed = slot.component({ t: key => key, useGuard: select => select({ long: false, budgetMs: 30000 }), submit: () => {} })
+  check('(k) the budget picker is enabled with long thinking off', relaxed.children[1].props.disabled === false)
+  check('(k) the picker reflects the pushed budget', relaxed.children[1].props.value === '30000', String(relaxed.children[1].props.value))
+  const bare = slot.component({ t: key => key, useGuard: () => undefined, submit: () => {} })
+  check('(k) the control shows the host default before the projection arrives', bare.children[1].props.value === 'default', String(bare.children[1].props.value))
+  const unwritable = slot.component({ t: key => key, useGuard: () => undefined, submit: undefined })
+  check('(k) the control renders nothing without a write path', unwritable === null)
+
+  // D1: the Default row must CLEAR the override; the client must not duplicate
+  // the host's configured default, which it cannot know.
+  const submitted = []
+  const writable = slot.component({
+    t: key => key, useGuard: select => select({ long: false, budgetMs: 30000 }), submit: line => submitted.push(line),
+  })
+  writable.children[1].props.onChange({ target: { value: 'default' } })
+  check('(k) the Default row clears the override instead of pinning a value', submitted[0] === '/guard budget default', String(submitted[0]))
+  writable.children[1].props.onChange({ target: { value: '120000' } })
+  check('(k) a preset row submits its milliseconds', submitted[1] === '/guard budget 120000', String(submitted[1]))
+  writable.children[1].props.onChange({ target: { value: '90000' } })
+  check('(k) the 90s preset row submits its milliseconds', submitted[2] === '/guard budget 90000', String(submitted[2]))
+  const presetRows = writable.children[1].children.map(option => option.props.value)
+  check('(k) the picker offers the 90s preset', presetRows.includes('90000'), JSON.stringify(presetRows))
+  const clientSource = await readFile(new URL('../client.js', import.meta.url), 'utf8')
+  check('(k) client.js carries no duplicated host default constant', !clientSource.includes('DEFAULT_BUDGET_MS'))
+  check('(k) client.js never submits a hardcoded millisecond default', !/budget 45000/u.test(clientSource))
+
+  // D3: a subagent session must not get an enabled control whose writes are dropped.
+  const subagentCtx = {
+    ...clientCtx,
+    sessions: { binding: () => undefined, subagentAddress: () => 'subagent:one' },
+  }
+  clientPlugin.apply(subagentCtx)
+  const subagentFace = slot.options.inject('session-subagent')
+  check('(k) a subagent session gets no write path', subagentFace !== undefined && typeof subagentFace.submit !== 'function', typeof subagentFace?.submit)
+  check('(k) the subagent control renders nothing',
+    slot.component({ t: key => key, useGuard: () => undefined, submit: subagentFace.submit }) === null)
+
+  // The catch arm must also hide the control, not offer a dead write path.
+  clientPlugin.apply(throwingCtx)
+  const thrownFace = slot.options.inject('session-3')
+  check('(k) the caught unmaterialized session gets no write path',
+    thrownFace !== undefined && typeof thrownFace.submit !== 'function', typeof thrownFace?.submit)
+  check('(k) the caught session control renders nothing',
+    slot.component({ t: key => key, useGuard: () => undefined, submit: thrownFace.submit }) === null)
 }
 
 console.log(`\n${failed === 0 ? 'PASS' : 'FAIL'} — ${passed} passed, ${failed} failed`)

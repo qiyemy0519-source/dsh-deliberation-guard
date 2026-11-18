@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Deliberation guard",
+    "description": "Interrupts a step that burns its whole budget on pure reasoning, and adds a per-conversation long-thinking switch with a patience-budget picker in the composer."
+  }
+}

@@ -7,14 +7,18 @@
   "main": "index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./package.json": "./package.json",
-    "./cordis.patch.yml": "./cordis.patch.yml"
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.js",
+    "client.js",
     "cordis.patch.yml",
     "README.md",
-    "test/guard.test.mjs"
+    "test/guard.test.mjs",
+    "locale/*.json"
   ],
   "keywords": [
     "deepseek-harness",
@@ -24,18 +28,15 @@
     "deliberation"
   ],
   "license": "MIT",
-  "author": "wangjian",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/qiyemy0519-source/dsh-deliberation-guard.git"
-  },
-  "homepage": "https://github.com/qiyemy0519-source/dsh-deliberation-guard#readme",
-  "bugs": {
-    "url": "https://github.com/qiyemy0519-source/dsh-deliberation-guard/issues"
-  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
     }
   },
   "scripts": {
