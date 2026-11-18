@@ -34,15 +34,36 @@ agent.steer(<nudge UserMessage>)                     // 再把提示词交给最
 
 ## 安装
 
-**先完全退出 DeepSeek Harness。** Harness 运行时配置是锁住的，`dsh plugin` 写不进去；装完再重启 Harness。
+### 从 GitHub 安装（同事用这个）
+
+**先完全退出 DeepSeek Harness。** Harness 运行时配置是锁住的，`dsh plugin` 写不进去；装完再重启。
+
+```
+dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.2.0"
+```
+
+桌面版把 `--profile web` 换成 `--profile desktop`；也可以在 **插件 → 添加插件** 里粘贴同一个地址。装完重启 Harness，输入框右侧会出现「长思考」开关和耐心预算下拉。
+
+### 更新到新版本
+
+Harness 不会自动更新第三方组合包，而且 pnpm 是按引用解析的：**版本号或引用没变时，直接再 add 一次不会拉到新提交**。所以固定用「卸载 → 按新 tag 安装 → 重启」：
+
+```
+dsh plugin --profile web remove dsh-deliberation-guard
+dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.3.0"
+```
+
+把 `#v0.3.0` 换成目标版本 tag（或提交 SHA）。**必须完全退出并重启 Harness** —— 客户端模块只在启动时加载，热重载不会换掉已加载的浏览器代码。
+
+### 本地开发（`link:`）
 
 ```
 dsh plugin --profile web add "link:D:\deepseek\deepseek-harness\.local-plugins\dsh-deliberation-guard"
 ```
 
-重启后插件即生效，默认配置已经够用。若 profile 里能解析到 `@deepseek-ai/schemastery`，还可以在 **设置 → 插件** 里直接改这些字段（带中文说明与默认值）。
+`link:` 下 profile 的 `node_modules` 只是指向本目录的软链，改源码不用重装，但**必须重启 Harness** 才会重新加载。
 
-> 这是一个 `link:` 安装：profile 的 `node_modules` 里只是指向本目录的软链，源码改了不用重装，但**必须重启 Harness** 才会重新加载。
+重启后插件即生效，默认配置已经够用。若 profile 里能解析到 `@deepseek-ai/schemastery`，还可以在 **设置 → 插件** 里直接改这些字段（带中文说明与默认值）。
 
 ## 配置
 
