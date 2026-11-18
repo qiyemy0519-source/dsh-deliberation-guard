@@ -39,10 +39,10 @@ agent.steer(<nudge UserMessage>)                     // 再把提示词交给最
 **先完全退出 DeepSeek Harness。** Harness 运行时配置是锁住的，`dsh plugin` 写不进去；装完再重启。
 
 ```
-dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.2.1"
+dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.3.0"
 ```
 
-`#v0.2.1` 是版本 tag，可用 tag 见仓库的 **Tags** 页面；不写 `#...` 时 pnpm 取默认分支的最新提交。桌面版把 `--profile web` 换成 `--profile desktop`；也可以在 **插件 → 添加插件** 里粘贴同一个地址。装完重启 Harness，输入框右侧会出现「长思考」开关和耐心预算下拉。
+`#v0.3.0` 是版本 tag，可用 tag 见仓库的 **Tags** 页面；不写 `#...` 时 pnpm 取默认分支的最新提交。桌面版把 `--profile web` 换成 `--profile desktop`；也可以在 **插件 → 添加插件** 里粘贴同一个地址。装完重启 Harness，输入框右侧会出现「长思考」开关和耐心预算下拉。
 
 ### 更新到新版本
 
