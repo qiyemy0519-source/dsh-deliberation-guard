@@ -39,21 +39,21 @@ agent.steer(<nudge UserMessage>)                     // 再把提示词交给最
 **先完全退出 DeepSeek Harness。** Harness 运行时配置是锁住的，`dsh plugin` 写不进去；装完再重启。
 
 ```
-dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.2.0"
+dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.2.1"
 ```
 
-桌面版把 `--profile web` 换成 `--profile desktop`；也可以在 **插件 → 添加插件** 里粘贴同一个地址。装完重启 Harness，输入框右侧会出现「长思考」开关和耐心预算下拉。
+`#v0.2.1` 是版本 tag，可用 tag 见仓库的 **Tags** 页面；不写 `#...` 时 pnpm 取默认分支的最新提交。桌面版把 `--profile web` 换成 `--profile desktop`；也可以在 **插件 → 添加插件** 里粘贴同一个地址。装完重启 Harness，输入框右侧会出现「长思考」开关和耐心预算下拉。
 
 ### 更新到新版本
 
-Harness 不会自动更新第三方组合包，而且 pnpm 是按引用解析的：**版本号或引用没变时，直接再 add 一次不会拉到新提交**。所以固定用「卸载 → 按新 tag 安装 → 重启」：
+Harness 不会自动更新第三方组合包，而且 pnpm 是按引用解析的：**版本号和引用都没变时，直接再 add 一次不会拉到新提交**。所以更新固定走「卸载 → 按目标 tag 安装 → 重启」：
 
 ```
 dsh plugin --profile web remove dsh-deliberation-guard
-dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.3.0"
+dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#<目标 tag>"
 ```
 
-把 `#v0.3.0` 换成目标版本 tag（或提交 SHA）。**必须完全退出并重启 Harness** —— 客户端模块只在启动时加载，热重载不会换掉已加载的浏览器代码。
+把 `#<目标 tag>` 换成要装的版本 tag（如 `v0.2.1`）或提交 SHA。**必须完全退出并重启 Harness** —— 客户端模块只在启动时加载，热重载不会换掉已加载的浏览器代码。
 
 ### 本地开发（`link:`）
 

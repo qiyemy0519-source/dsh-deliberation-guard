@@ -1,6 +1,6 @@
 {
   "name": "dsh-deliberation-guard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Deliberation-budget guard for DeepSeek Harness: interrupts a step that burns its whole budget on pure reasoning and nudges the model to answer with what it already knows.",
   "type": "module",
