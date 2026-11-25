@@ -39,10 +39,10 @@ agent.steer(<nudge UserMessage>)                     // 再把提示词交给最
 **先完全退出 DeepSeek Harness。** Harness 运行时配置是锁住的，`dsh plugin` 写不进去；装完再重启。
 
 ```
-dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.5.0"
+dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.6.0"
 ```
 
-`#v0.5.0` 是版本 tag，可用 tag 见仓库的 **Tags** 页面；不写 `#...` 时 pnpm 取默认分支的最新提交。桌面版把 `--profile web` 换成 `--profile desktop`；也可以在 **插件 → 添加插件** 里粘贴同一个地址。装完重启 Harness，输入框右侧会出现「长思考」开关和耐心预算下拉。
+`#v0.6.0` 是版本 tag，可用 tag 见仓库的 **Tags** 页面；不写 `#...` 时 pnpm 取默认分支的最新提交。桌面版把 `--profile web` 换成 `--profile desktop`；也可以在 **插件 → 添加插件** 里粘贴同一个地址。装完重启 Harness，输入框右侧会出现「思考模式」和「耐心预算」两个菜单 chip。
 
 ### 更新到新版本
 
@@ -80,34 +80,34 @@ dsh plugin --profile web add "link:D:\deepseek\deepseek-harness\.local-plugins\d
 
 配置错误会在**加载时**直接抛错（类型不对、`budgetMs`/`cooldownMs`/`minReasoningChars` 为负、`nudge` 为空、config 不是对象），不会静默退回默认值。
 
-## 按会话的控制：`/guard`、长思考开关与耐心预算
+## 按会话的控制：`/guard`、思考模式与耐心预算
 
 上面的 `Config` 是**全局**默认值。除此之外，每个会话还可以有自己的覆盖，写在会话日志里，重启/分叉后照样重建：
 
-- **长思考开关**：打开后，**这个会话永远不会被自动打断**（其余触发条件全部作废）。
+- **思考模式**：选「长思考」后，**这个会话永远不会被自动打断**（其余触发条件全部作废）；选「自动打断」恢复默认行为。
 - **耐心预算**：只覆盖这个会话的 `budgetMs`，也就是自动模式的耐心值。
 
-输入框右侧（`conversation.input.right`）有一个按会话的控制：**一个胶囊里装两个设置** —— 左边「长思考」开关，右边「耐心预算」下拉。它读的是本会话的投影值，写的时候**只走 `/guard` 命令**——所以会话日志始终是唯一事实来源，界面显示的是命令落库后推回来的值，而不是本地猜测。下拉里的「默认」提交的是 `/guard budget default`（**清除**覆盖），不是把当前默认值写死：客户端拿不到 `Config.budgetMs`，写死一个数字会在别的部署里静默算错耐心值。子代理会话没有自己的输入框，因此整个控件不渲染。
+输入框右侧（`conversation.input.right`）有一个按会话的控制：**两个菜单 chip** —— 左边「思考模式」（长思考 / 自动打断），右边「耐心预算」（默认 / 15s / 45s / 90s / 120s）。它读的是本会话的投影值，写的时候**只走 `/guard` 命令**——所以会话日志始终是唯一事实来源，界面显示的是命令落库后推回来的值，而不是本地猜测。菜单里的「默认」提交的是 `/guard budget default`（**清除**覆盖），不是把当前默认值写死：客户端拿不到 `Config.budgetMs`，写死一个数字会在别的部署里静默算错耐心值。长思考开启时预算不生效，所以那一侧 chip 置灰。子代理会话没有自己的输入框，因此整个控件不渲染。
 
 ### 外观
 
-控件**不自己发明形态**：它用的就是宿主 composer 里那两个控件的同一套 chrome，规则逐条抄自宿主源码 —— chip 外观、hover、focus ring 来自模型选择器的 trigger（`ui-model-selection/src/client/ModelSelect.module.css` 的 `.trigger`），原生 select 的重置与自绘 chevron 来自 composer 的 `.select`（`ui-conversation/src/client/skeleton/InputBar.module.css`），选中态沿用宿主 `Pill.active`：
+控件**不自己发明形态**：两个 chip 用的就是宿主 composer 里那几个选择器的同一套 chrome，规则逐条抄自宿主源码 —— chip 外观、hover、focus ring、`.triggerLabel`、`.chevron`/`.chevronOpen` 来自权限选择器（`ui-permission-presets/src/client/PermissionSelect.module.css`），`anchor-name` 席位与 400 字重来自模型选择器的 trigger（`ui-model-selection/src/client/ModelSelect.module.css` 的 `.trigger`），弹层是宿主 `Menu` / `MenuSurface` 原语里这个控件真正需要的那部分（`ui-primitives/src/Menu.module.css` 的 `.list`/`.portal`/`[data-anchor-side='top']`/`.scrollable`/`.viewport`/`.item`/`.check`，`MenuSurface.module.css` 的半透明材质与 macOS backing）：
 
 | 属性 | 取值（与宿主一致） |
 | --- | --- |
 | 尺寸 | `height: 28px` —— 与模型选择器、附件圆钮同一行高 |
-| 圆角 | `var(--dsw-radius-sm)`（8px） |
+| 圆角 | `var(--dsw-radius-sm)`（8px）；弹层卡片 `var(--dsw-radius-lg)` |
 | 底色 | 透明；只有 hover 才上 `--dsw-alias-interactive-bg-hover` |
-| 字体 | 13px / 20px，weight 400（字体族由宿主全局 `button, select { font-family: inherit }` 提供） |
-| 选中态 | `--dsw-alias-button-ghost-active-fill` + `inset 0 0 0 1px var(--dsw-alias-button-ghost-active-border)`，文字转 `--dsw-alias-label-primary` |
-| 焦点 | `0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary))`，与模型选择器同一写法 |
-| 禁用 | `opacity: 0.5; cursor: default` |
-| 下拉 | `appearance: none` + 宿主同一张 chevron data-URI，`background-position: right 4px center` |
+| 字体 | 13px / 20px，weight 400（字体族由宿主全局 `button, select { font-family: inherit }` 提供，这里不写 `font-family`） |
+| 选中态 | **没有填充**：chip 文字本身就是当前值（长思考 / 自动打断、默认 / 15s / 45s / 90s / 120s），菜单里当前行挂宿主同一枚尾随对勾（`.check`，14px，`--dsw-alias-label-primary`） |
+| 焦点 | `0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary))`，与权限选择器同一写法 |
+| 禁用 | `color: var(--dsw-alias-label-dimmed); cursor: default` |
+| 弹层 | `require('react-dom').createPortal(list, document.body)` 挂到 `document.body`；`position: fixed` + `position-anchor`，`top: var(--dsh-menu-window-top)`、`bottom: max(12px, calc(anchor(top) + 4px))`、`align-self: end` —— 即宿主 `Menu` 的 `portal` + `sideTop`，所以永远开在输入框上方；材质是 `--dsw-menu-surface-fill` + `--dsw-menu-backdrop-filter` |
 | 间距 | 行内 `gap: 12px`；在宿主的 `@container (max-width: 560px)` 下收成 8px |
 
-早先的版本自己加了一圈边框和一个胶囊底色 —— 宿主 composer 的控件根本不是那个形态（它们是透明的 ghost chip），那圈边框正是「看起来不像 DSH」的来源。
+早先的版本自己加了一圈边框和一个胶囊底色 —— 宿主 composer 的控件根本不是那个形态（它们是透明的 ghost chip），那圈边框正是「看起来不像 DSH」的来源。再早一版把「长思考已开启」画成实心胶囊，也和宿主「文字 + 菜单内对勾」的表达不一致；两处现在都去掉了。
 
-无障碍：开关是 `<button aria-pressed>`，下拉是带 `aria-label` 的原生 `<select>`。样式是作用域在 `.dg-` 下的一份样式表，随插件卸载移除；`design_audit` 对发货 CSS 实测 28 个元素零违规、字号单一 13px、浅色与深色下文字均通过 WCAG AA。
+无障碍与交互：每个 chip 是 `<button aria-haspopup="menu" aria-expanded>`，可见文字是当前值，`aria-label` 用「思考模式：长思考」这样的全名；菜单行是 `role="menuitemradio"` 带 `aria-checked`。点 chip 开合菜单；点一行就写入并关闭；`pointerdown` 落在 chip 和菜单之外会关闭；`Escape` 关闭并把焦点还给 chip；ArrowDown / ArrowUp / Home / End 在可用行之间移动焦点，Enter / Space 是原生按钮行为。菜单自己会 `stopPropagation`：portal 在 React 树里仍是 chip 的兄弟节点，不拦下来会二次触发 chip 的开关。样式是作用域在 `.dg-` 下的一份样式表，随插件卸载移除；字号只有 13px 一档，颜色全部来自宿主 token。
 
 命令语法（`rawInput` 会原样记进 `command/run`，投影就是从这条记录回放出状态的）：
 
@@ -164,7 +164,7 @@ node test/guard.test.mjs
 
 覆盖：长纯推理恰好触发一次、`cancel` 先于 `steer`、且 `cancel` 带 `{ keepInbox: true }` 不丢排队消息；正文/工具调用出现后不触发；低于 `budgetMs` 或低于 `minReasoningChars` 不触发；`enabled=false` 不触发；`includeSubagents` 对子代理的取舍；冷却期抑制；新 attempt 重置证据；卸载后监听器消失；`cancel`/`steer` 抛错被吞掉并上报；畸形帧不抛错；配置错误在加载时报错；具名导出且无 default export。
 
-按会话的控制同样用纯 `node` 验证：可选层按名字请求、投影键/版本/初始状态/线视图、`command/run` 折叠的每条分支（切换、显式开关、毫秒预算、预设名、`budget default` 只清预算不动长思考、`reset`、未知参数、别人的命令、非命令事件都保持同一引用）、十进制以外的写法（`1e3`/`0x10`/`-0`/`1_000`/`45000ms`/`-1`）一律拒绝、校验器接受与拒绝、命令处理器的成功与报错文本、**状态行报的是配置的默认值而不是 schema 默认值**、**投影感知的触发判定**（长思考永不打断、会话预算覆盖全局、`0` 预算立即触发）、会话无法折叠时退回全局预算、投影注册被拒时仍按全局预算工作并上报、命令注册失败时投影不被读取且两层分别上报，以及 `client.js` 的加载器 id、槽位注册选项、locale 字典、槽位工厂不抛异常、组件在长思考开/关/投影未到达/无写入通道四种情况下的渲染、`默认` 行提交的是清除指令、源码里没有重复的宿主默认常量、子代理与异常会话都不渲染控件。全部通过时退出码为 0，否则非 0。
+按会话的控制同样用纯 `node` 验证：可选层按名字请求、投影键/版本/初始状态/线视图、`command/run` 折叠的每条分支（切换、显式开关、毫秒预算、预设名、`budget default` 只清预算不动长思考、`reset`、未知参数、别人的命令、非命令事件都保持同一引用）、十进制以外的写法（`1e3`/`0x10`/`-0`/`1_000`/`45000ms`/`-1`）一律拒绝、校验器接受与拒绝、命令处理器的成功与报错文本、**状态行报的是配置的默认值而不是 schema 默认值**、**投影感知的触发判定**（长思考永不打断、会话预算覆盖全局、`0` 预算立即触发）、会话无法折叠时退回全局预算、投影注册被拒时仍按全局预算工作并上报、命令注册失败时投影不被读取且两层分别上报。浏览器半同样用纯 `node` 验证：加载器 id、槽位注册选项、locale 字典（含新增的「自动打断」）、槽位工厂不抛异常，以及在一份最小 hook 运行时上真跑组件 —— 两个菜单 chip 的结构、没有 `<select>`/圆点/实心选中态、chip 文字就是当前值、菜单通过 `document.body` portal 打开且 `position-anchor` 对准 chip、行是 `role="menuitemradio"` 且当前行 `aria-checked` 并挂宿主对勾、点行提交正确的 `/guard` 行并关闭、`Escape` 关闭并把焦点还给 chip、外部 `pointerdown` 关闭而菜单内不关闭、Arrow/Home/End 焦点走位、长思考开启时预算 chip 置灰、`默认` 行提交的是清除指令、投影未到达与无写入通道两种退化、菜单 click 不会二次触发 chip，以及发货 CSS 逐条抄对宿主规则（chip chrome、focus ring token、disabled 处理、没有自造的边框/填充、12px→8px 容器间距）。全部通过时退出码为 0，否则非 0。
 
 ## 卸载
 

@@ -619,6 +619,128 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
     !h.reports.some(r => r.includes('per-conversation control unavailable')), JSON.stringify(h.reports))
 }
 
+/**
+ * Minimal hook runtime for the composer control. The plugin runs against the
+ * browser module table, so the test supplies React itself instead of installing
+ * a framework: this renders one function component, commits its refs, runs its
+ * effects, and re-renders when a setter changes state. Elements carry the three
+ * DOM reads the control performs — `contains`, `querySelectorAll`, `focus` —
+ * over the plain render tree.
+ * @returns the `react` and `react-dom` stubs, the portal log, and render access.
+ */
+function createControlReact() {
+  const portals = []
+  let instance = null
+
+  const nodePrototype = {
+    contains(candidate) {
+      const walk = (node) => {
+        if (node === null || node === undefined || typeof node !== 'object') return false
+        if (Array.isArray(node)) return node.some(walk)
+        return node === candidate || walk(node.children)
+      }
+      // `Node.contains` is inclusive, and the dismissal check relies on that:
+      // a pointerdown on the trigger or the list itself is inside it.
+      return candidate === this || walk(this.children)
+    },
+    querySelectorAll(selector) {
+      const enabledOnly = selector.includes(':not(:disabled)')
+      const found = []
+      const walk = (node) => {
+        if (node === null || node === undefined || typeof node !== 'object') return
+        if (Array.isArray(node)) { for (const child of node) walk(child); return }
+        if (node.type === 'button' && !(enabledOnly && node.props.disabled === true)) found.push(node)
+        walk(node.children)
+      }
+      walk(this.children)
+      return found
+    },
+    focus() { globalThis.document.activeElement = this },
+  }
+
+  const element = (type, props, children) => Object.assign(Object.create(nodePrototype), {
+    type,
+    props: props ?? {},
+    children: children.length === 0 ? undefined : children.length === 1 ? children[0] : children,
+  })
+
+  const attachRefs = (node) => {
+    if (node === null || node === undefined || typeof node !== 'object') return
+    if (Array.isArray(node)) { for (const child of node) attachRefs(child); return }
+    const ref = node.props.ref
+    if (typeof ref === 'function') ref(node)
+    else if (ref !== null && ref !== undefined && typeof ref === 'object') ref.current = node
+    attachRefs(node.children)
+  }
+
+  const draw = () => {
+    const current = instance
+    if (current === null) return
+    current.cursor = 0
+    current.tree = current.component(current.props)
+    attachRefs(current.tree)
+    for (const hook of current.hooks) {
+      if (hook?.effect === undefined) continue
+      const effect = hook.effect
+      hook.effect = undefined
+      if (typeof hook.cleanup === 'function') hook.cleanup()
+      hook.cleanup = effect()
+    }
+  }
+
+  const use = (create) => {
+    const index = instance.cursor++
+    if (instance.hooks[index] === undefined) instance.hooks[index] = create()
+    return instance.hooks[index]
+  }
+
+  const react = {
+    createElement: (type, props, ...children) => element(type, props, children),
+    useId: () => `:dg${(react.ids = (react.ids ?? 0) + 1)}:`,
+    useState: (initial) => {
+      const hook = use(() => ({ value: typeof initial === 'function' ? initial() : initial }))
+      const set = (next) => {
+        const value = typeof next === 'function' ? next(hook.value) : next
+        if (Object.is(value, hook.value)) return
+        hook.value = value
+        draw()
+      }
+      return [hook.value, set]
+    },
+    useRef: (initial) => use(() => ({ current: initial })),
+    useEffect: (effect, deps) => {
+      const hook = use(() => ({ deps: undefined, cleanup: undefined, effect: undefined }))
+      const changed = hook.deps === undefined || deps === undefined
+        || hook.deps.length !== deps.length || deps.some((value, at) => !Object.is(value, hook.deps[at]))
+      if (!changed) return
+      hook.deps = deps === undefined ? undefined : [...deps]
+      hook.effect = effect
+    },
+  }
+
+  return {
+    react,
+    reactDom: { createPortal: (node, container) => { portals.push({ node, container }); return node } },
+    portals,
+    /**
+     * Mount one function component and return its element tree.
+     * @param component - the function component to render.
+     * @param props - the props it renders with.
+     * @returns the rendered tree, or `null` when the component renders nothing.
+     */
+    render(component, props) {
+      if (instance !== null) {
+        for (const hook of instance.hooks) if (typeof hook?.cleanup === 'function') hook.cleanup()
+      }
+      instance = { component, props, hooks: [], cursor: 0, tree: null }
+      draw()
+      return instance.tree
+    },
+    /** The tree produced by the latest render. */
+    latest() { return instance?.tree ?? null },
+  }
+}
+
 {
   // The browser half is a module-loader factory, not an importable module:
   // execute it against a stubbed loader and drive its registration and control.
@@ -637,16 +759,28 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
   const localeRegistrations = []
   const clientEffects = []
   const styleElements = []
+  const documentListeners = new Map()
   const previousDocument = globalThis.document
-  globalThis.document = {
+  const fakeDocument = {
     head: { append: element => styleElements.push(element) },
+    body: {},
+    activeElement: null,
     createElement: () => ({
       textContent: '',
       remove() { const at = styleElements.indexOf(this); if (at >= 0) styleElements.splice(at, 1) },
     }),
+    addEventListener: (type, handler) => {
+      const handlers = documentListeners.get(type) ?? new Set()
+      handlers.add(handler)
+      documentListeners.set(type, handlers)
+    },
+    removeEventListener: (type, handler) => { documentListeners.get(type)?.delete(handler) },
   }
-  const fakeReact = { createElement: (type, props, children) => ({ type, props: props ?? {}, children }) }
-  const clientPlugin = entry.factory(name => (name === 'react' ? fakeReact : undefined))
+  globalThis.document = fakeDocument
+  /** Deliver one document event to the listeners an open menu installed. */
+  const dispatch = (type, event) => { for (const handler of [...(documentListeners.get(type) ?? [])]) handler(event) }
+  const control = createControlReact()
+  const clientPlugin = entry.factory(name => (name === 'react' ? control.react : name === 'react-dom' ? control.reactDom : undefined))
   const clientCtx = {
     effect: (fn) => { const cleanup = fn(); if (typeof cleanup === 'function') clientEffects.push(cleanup); return cleanup },
     locale: { register: (ns, dicts) => { localeRegistrations.push([ns, dicts]); return () => {} } },
@@ -665,7 +799,8 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
   check('(k) the client registration declares the locale namespace', slot?.options?.locale === 'deliberation.guard', String(slot?.options?.locale))
   check('(k) the client registers its dictionaries under the slot namespace',
     localeRegistrations.length === 1 && localeRegistrations[0][0] === 'deliberation.guard'
-      && localeRegistrations[0][1].zh['long.label'] === '长思考' && localeRegistrations[0][1].en['long.label'] === 'Long thinking',
+      && localeRegistrations[0][1].zh['long.label'] === '长思考' && localeRegistrations[0][1].en['long.label'] === 'Long thinking'
+      && localeRegistrations[0][1].zh['mode.auto'] === '自动打断' && localeRegistrations[0][1].en['mode.auto'] === 'Auto-interrupt',
     JSON.stringify(localeRegistrations.map(r => r[0])))
 
   const face = slot.options.inject('session-1')
@@ -681,50 +816,188 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
   try { safe = slot.options.inject('session-2') } catch { safe = undefined }
   check('(k) the slot inject factory never throws on an unmaterialized session', safe !== undefined && typeof safe?.hooks?.guard?.getSnapshot === 'function')
 
-  const element = slot.component({ t: key => key, useGuard: select => select({ long: true, budgetMs: null }), submit: () => {} })
-  check('(k) the control renders a chip row with both settings', element !== null && element.props.className === 'dg-guard' && element.children.length === 2, JSON.stringify(element?.children?.length))
-  check('(k) the budget picker is inert while long thinking is on', element.children[1].props.disabled === true)
-  check('(k) the toggle reports its pressed state', element.children[0].props['aria-pressed'] === true)
-  check('(k) both elements carry the host chip classes', element.children[0].props.className === 'dg-toggle' && element.children[1].props.className === 'dg-select')
+  /** Mount the registered control with one projection state and write path. */
+  const renderControl = (state, submit, t = key => key) =>
+    control.render(slot.component, { t, useGuard: select => select(state), submit })
+  /** The visible label of one chip trigger. */
+  const triggerLabel = trigger => trigger.children[0].children
+  /** Every node in a rendered tree matching a predicate. */
+  const findAll = (node, match) => {
+    if (node === null || node === undefined || typeof node !== 'object') return []
+    if (Array.isArray(node)) return node.flatMap(child => findAll(child, match))
+    return (match(node) ? [node] : []).concat(findAll(node.children, match))
+  }
 
-  const relaxed = slot.component({ t: key => key, useGuard: select => select({ long: false, budgetMs: 30000 }), submit: () => {} })
-  check('(k) the budget picker is enabled with long thinking off', relaxed.children[1].props.disabled === false)
-  check('(k) the picker reflects the pushed budget', relaxed.children[1].props.value === '30000', String(relaxed.children[1].props.value))
-  const bare = slot.component({ t: key => key, useGuard: () => undefined, submit: () => {} })
-  check('(k) the control shows the host default before the projection arrives', bare.children[1].props.value === 'default', String(bare.children[1].props.value))
-  const unwritable = slot.component({ t: key => key, useGuard: () => undefined, submit: undefined })
+  const submitted = []
+  let tree = renderControl({ long: true, budgetMs: null }, line => submitted.push(line))
+  check('(k) the control renders a two-chip row', tree?.props?.className === 'dg-guard' && tree.children.length === 2,
+    String(tree?.children?.length))
+  const longChip = tree.children[0]
+  const budgetChip = tree.children[1]
+  check('(k) each chip is a host menu root holding one trigger',
+    longChip.props.className === 'dg-chip' && budgetChip.props.className === 'dg-chip')
+  const longTrigger = longChip.children[0]
+  const budgetTrigger = budgetChip.children[0]
+  check('(k) both triggers carry the host chip chrome class',
+    longTrigger.props.className === 'dg-trigger' && budgetTrigger.props.className === 'dg-trigger')
+  check('(k) the first chip labels the current mode', triggerLabel(longTrigger) === 'long.label', String(triggerLabel(longTrigger)))
+  check('(k) the second chip labels the current budget', triggerLabel(budgetTrigger) === 'budget.default', String(triggerLabel(budgetTrigger)))
+  check('(k) the budget chip is inert while long thinking is on', budgetTrigger.props.disabled === true)
+  check('(k) neither menu is open before a click', longChip.children[1] === null && budgetChip.children[1] === null)
+  check('(k) the trigger advertises its popup state',
+    longTrigger.props['aria-haspopup'] === 'menu' && longTrigger.props['aria-expanded'] === false)
+  check('(k) each trigger is exactly the label plus a chevron',
+    longTrigger.children.length === 2 && longTrigger.children[0].props.className === 'dg-trigger-label'
+      && longTrigger.children[1].props.className === 'dg-chevron')
+  check('(k) no native select, dot, or filled selected state survives',
+    findAll(tree, node => node.type === 'select').length === 0
+      && findAll(tree, node => String(node.props?.className ?? '').includes('dg-dot')).length === 0
+      && findAll(tree, node => node.props?.['aria-pressed'] !== undefined).length === 0)
+
+  // Opening the first chip: the portaled card, its anchor, and its rows.
+  longTrigger.props.onClick()
+  check('(k) clicking the trigger opens its menu', control.latest().children[0].children[1] !== null)
+  control.latest().children[0].children[0].props.onClick()
+  check('(k) clicking the open trigger again closes it', control.latest().children[0].children[1] === null)
+  control.latest().children[0].children[0].props.onClick()
+  tree = control.latest()
+  const openLongTrigger = tree.children[0].children[0]
+  const longMenu = tree.children[0].children[1][0]
+  check('(k) the opened node is the host menu card', longMenu?.props?.className === 'dg-menu', String(longMenu?.props?.className))
+  check('(k) the open trigger rotates its chevron',
+    findAll(openLongTrigger, node => node.props?.className === 'dg-chevron dg-chevron-open').length === 1)
+  check('(k) the list is portaled into document.body',
+    control.portals.some(entry => entry.node === longMenu && entry.container === fakeDocument.body))
+  check('(k) the macOS surface backing rides the same portal',
+    control.portals.some(entry => entry.node?.props?.className === 'dg-backing' && entry.container === fakeDocument.body))
+  check('(k) the list anchors to the trigger through the host anchor properties',
+    typeof openLongTrigger.props.style.anchorName === 'string'
+      && openLongTrigger.props.style.anchorName.startsWith('--dg-guard-')
+      && openLongTrigger.props.style.anchorName === longMenu.props.style.positionAnchor,
+    `${String(openLongTrigger.props.style.anchorName)} / ${String(longMenu.props.style.positionAnchor)}`)
+  check('(k) the list carries the host translucent surface material',
+    longMenu.children[0].props.className === 'dg-material' && longMenu.children[0].props['aria-hidden'] === true)
+  const longRows = longMenu.querySelectorAll('button:not(:disabled)')
+  check('(k) the menu lists both modes as menuitemradio rows',
+    longRows.length === 2 && longRows.every(row => row.props.role === 'menuitemradio'), String(longRows.length))
+  check('(k) the current mode is the checked row and the other is not',
+    longRows[0].props['aria-checked'] === true && longRows[1].props['aria-checked'] === false)
+  check('(k) the checked row carries the host trailing check',
+    longRows[0].children.some(child => child?.props?.className === 'dg-check'))
+  let stopped = false
+  longMenu.props.onClick({ stopPropagation: () => { stopped = true } })
+  check('(k) the portaled list stops its click from re-firing the trigger', stopped)
+
+  longRows[1].props.onClick()
+  check('(k) choosing the other mode submits the explicit /guard line', submitted[0] === '/guard long off', String(submitted[0]))
+  tree = control.latest()
+  check('(k) choosing a row closes the menu', tree.children[0].children[1] === null)
+
+  tree = renderControl({ long: false, budgetMs: 45000 }, line => submitted.push(line))
+  const openBudgetTrigger = tree.children[1].children[0]
+  check('(k) the budget chip is enabled with long thinking off', openBudgetTrigger.props.disabled === false)
+  check('(k) the budget chip shows the pushed budget', triggerLabel(openBudgetTrigger) === '45s', String(triggerLabel(openBudgetTrigger)))
+  check('(k) the first chip shows the automatic mode when off', triggerLabel(tree.children[0].children[0]) === 'mode.auto')
+  openBudgetTrigger.props.onClick()
+  tree = control.latest()
+  const budgetMenu = tree.children[1].children[1][0]
+  const budgetRows = budgetMenu.querySelectorAll('button:not(:disabled)')
+  check('(k) the budget menu offers the default and the four presets', budgetRows.length === 5, String(budgetRows.length))
+  check('(k) the picker offers the 90s preset', budgetRows.map(row => row.children[0].children).includes('90s'),
+    JSON.stringify(budgetRows.map(row => row.children[0].children)))
+  check('(k) the pushed budget is the checked row',
+    budgetRows.map(row => row.props['aria-checked']).join(',') === 'false,false,true,false,false',
+    budgetRows.map(row => row.props['aria-checked']).join(','))
+  budgetRows[0].props.onClick()
+  check('(k) the Default row clears the override instead of pinning a value', submitted[1] === '/guard budget default', String(submitted[1]))
+
+  tree = renderControl({ long: false, budgetMs: 15000 }, line => submitted.push(line))
+  tree.children[1].children[0].props.onClick()
+  control.latest().children[1].children[1][0].querySelectorAll('button:not(:disabled)')[4].props.onClick()
+  check('(k) a preset row submits its milliseconds', submitted[2] === '/guard budget 120000', String(submitted[2]))
+
+  // Escape closes the menu and hands the keyboard back to the trigger.
+  tree = renderControl({ long: false, budgetMs: null }, line => submitted.push(line))
+  tree.children[1].children[0].props.onClick()
+  const escapeTrigger = control.latest().children[1].children[0]
+  check('(k) the menu is open before Escape', control.latest().children[1].children[1] !== null)
+  dispatch('keydown', { key: 'Escape', preventDefault() {} })
+  check('(k) Escape closes the menu', control.latest().children[1].children[1] === null)
+  check('(k) Escape returns focus to the trigger', fakeDocument.activeElement === escapeTrigger)
+  check('(k) closing removes the dismissal listeners', (documentListeners.get('keydown')?.size ?? 0) === 0
+    && (documentListeners.get('pointerdown')?.size ?? 0) === 0)
+
+  // A pointerdown outside both the trigger and the list dismisses the menu.
+  tree = renderControl({ long: false, budgetMs: null }, line => submitted.push(line))
+  tree.children[1].children[0].props.onClick()
+  const outsideMenu = control.latest().children[1].children[1][0]
+  dispatch('pointerdown', { target: outsideMenu })
+  check('(k) a pointerdown inside the list keeps it open', control.latest().children[1].children[1] !== null)
+  dispatch('pointerdown', { target: { nodeType: 1 } })
+  check('(k) a pointerdown outside both closes the menu', control.latest().children[1].children[1] === null)
+
+  // The arrow walk moves real focus over the enabled rows.
+  tree = renderControl({ long: false, budgetMs: null }, line => submitted.push(line))
+  tree.children[1].children[0].props.onClick()
+  const walkRows = control.latest().children[1].children[1][0].querySelectorAll('button:not(:disabled)')
+  const press = key => dispatch('keydown', { key, preventDefault() {} })
+  press('ArrowDown')
+  check('(k) ArrowDown enters the list at the first row', fakeDocument.activeElement === walkRows[0])
+  press('ArrowDown')
+  check('(k) ArrowDown steps to the next row', fakeDocument.activeElement === walkRows[1])
+  press('End')
+  check('(k) End jumps to the last row', fakeDocument.activeElement === walkRows[4])
+  press('ArrowUp')
+  check('(k) ArrowUp steps back', fakeDocument.activeElement === walkRows[3])
+  press('Home')
+  check('(k) Home returns to the first row', fakeDocument.activeElement === walkRows[0])
+  press('ArrowUp')
+  check('(k) ArrowUp wraps to the last row', fakeDocument.activeElement === walkRows[4])
+  press('Escape')
+
+  // Degenerate renders: the client must not duplicate the host's configured
+  // default, which it cannot know, so an absent projection shows `默认` and the
+  // automatic mode instead of guessing a value.
+  const bare = renderControl(undefined, () => {})
+  check('(k) the control shows the host default before the projection arrives',
+    triggerLabel(bare.children[1].children[0]) === 'budget.default')
+  check('(k) an absent projection shows the automatic mode', triggerLabel(bare.children[0].children[0]) === 'mode.auto')
+  const unwritable = renderControl(undefined, undefined)
   check('(k) the control renders nothing without a write path', unwritable === null)
 
-  // D1: the Default row must CLEAR the override; the client must not duplicate
-  // the host's configured default, which it cannot know.
-  const submitted = []
-  const writable = slot.component({
-    t: key => key, useGuard: select => select({ long: false, budgetMs: 30000 }), submit: line => submitted.push(line),
-  })
-  const writableSelect = writable.children[1]
-  writableSelect.props.onChange({ target: { value: 'default' } })
-  check('(k) the Default row clears the override instead of pinning a value', submitted[0] === '/guard budget default', String(submitted[0]))
-  writableSelect.props.onChange({ target: { value: '120000' } })
-  check('(k) a preset row submits its milliseconds', submitted[1] === '/guard budget 120000', String(submitted[1]))
-  writableSelect.props.onChange({ target: { value: '90000' } })
-  check('(k) the 90s preset row submits its milliseconds', submitted[2] === '/guard budget 90000', String(submitted[2]))
-  const presetRows = writableSelect.children.map(option => option.props.value)
-  check('(k) the picker offers the 90s preset', presetRows.includes('90000'), JSON.stringify(presetRows))
-
-  // The chrome copies the host composer's own chips rule-for-rule instead of
-  // inventing a shape, so the control is indistinguishable from its neighbours.
-  // Each check below pins one property of that copy.
+  // The chrome copies the host composer's own chips and menu primitive
+  // rule-for-rule instead of inventing a shape, so the control is
+  // indistinguishable from its neighbours. Each check below pins one property.
   const css = styleElements[0]?.textContent ?? ''
   check('(k) every rule is scoped under .dg-', css.includes('.dg-guard') && !/(^|})\s*(button|select)\s*\{/.test(css))
-  check('(k) the chip chrome matches the composer model trigger', css.includes('height:28px') && css.includes('border-radius:var(--dsw-radius-sm)') && css.includes('background:transparent') && css.includes('font-size:13px') && css.includes('line-height:20px'))
-  check('(k) no capsule border or fill was invented', !css.includes('border:0.5px solid') && !css.includes('background:var(--dsw-specific-selector)'))
+  check('(k) the chip chrome matches the host permission and model triggers',
+    css.includes('height:28px') && css.includes('border-radius:var(--dsw-radius-sm)') && css.includes('border:none')
+      && css.includes('background:transparent') && css.includes('color:var(--dsw-alias-label-secondary)')
+      && css.includes('font-size:13px') && css.includes('line-height:20px'))
+  check('(k) the chip chrome sets no font family of its own', !css.includes('font-family'))
+  check('(k) no capsule border or filled selected state was invented',
+    !css.includes('border:0.5px solid') && !css.includes('--dsw-alias-button-ghost-active-fill')
+      && !css.includes('inset 0 0 0 1px') && !css.includes('[aria-pressed') && !css.includes('[aria-checked'))
   check('(k) no off-scale radius survives', !css.includes('border-radius:6px'))
-  check('(k) hover uses the host interactive fill', css.includes('.dg-toggle:hover:not(:disabled)') && css.includes('.dg-select:hover:not(:disabled)') && css.includes('var(--dsw-alias-interactive-bg-hover)'))
+  check('(k) hover uses the host interactive fill',
+    css.includes('.dg-trigger:hover:not(:disabled)') && css.includes('.dg-item:hover:not(:disabled)')
+      && css.includes('var(--dsw-alias-interactive-bg-hover)'))
   check('(k) focus uses the host focus ring token', css.includes('var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))'))
-  check('(k) the pressed state follows the host Pill.active treatment', css.includes('--dsw-alias-button-ghost-active-fill') && css.includes('inset 0 0 0 1px var(--dsw-alias-button-ghost-active-border)'))
-  check('(k) the native select chrome is reset and the host chevron is drawn', css.includes('appearance:none') && css.includes('background-image:url("data:image/svg+xml,'))
-  check('(k) disabled matches the host opacity treatment', css.includes('opacity:0.5'))
-  check('(k) the row gap is the host 12px, collapsing to 8px in the host container query', css.includes('gap:12px') && css.includes('@container (max-width:560px)') && css.includes('gap:8px'))
+  check('(k) disabled matches the host dimmed treatment',
+    css.includes('.dg-trigger:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}'))
+  check('(k) the list copies the host portal and sideTop anchor declarations',
+    css.includes('position:fixed') && css.includes('position-area:none') && css.includes('z-index:1100')
+      && css.includes('--dsh-menu-window-top:max(12px,var(--dsh-frame-overlay-top,12px))')
+      && css.includes('top:var(--dsh-menu-window-top)') && css.includes('bottom:max(12px,calc(anchor(top) + 4px))')
+      && css.includes('left:max(12px,anchor(left))') && css.includes('align-self:end')
+      && css.includes('position-try-fallbacks:--dsh-menu-wide-above,--dsh-menu-below'))
+  check('(k) the list carries the host translucent surface material',
+    css.includes('background:var(--dsw-menu-surface-fill)') && css.includes('backdrop-filter:var(--dsw-menu-backdrop-filter)')
+      && css.includes('box-shadow:var(--dsw-elevation-prominent)') && css.includes('anchor-name:var(--dsh-menu-anchor)'))
+  check('(k) the selected row is marked by the host trailing check, never a fill',
+    css.includes('.dg-check{flex:none;width:14px;height:14px;color:var(--dsw-alias-label-primary)}'))
+  check('(k) the row gap is the host 12px, collapsing to 8px in the host container query',
+    css.includes('gap:12px') && css.includes('@container (max-width:560px)') && css.includes('gap:8px'))
   check('(k) the stylesheet is removed when the plugin unloads', (() => { for (const cleanup of clientEffects) cleanup(); return styleElements.length === 0 })())
   if (previousDocument === undefined) delete globalThis.document
   else globalThis.document = previousDocument
@@ -740,16 +1013,14 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
   clientPlugin.apply(subagentCtx)
   const subagentFace = slot.options.inject('session-subagent')
   check('(k) a subagent session gets no write path', subagentFace !== undefined && typeof subagentFace.submit !== 'function', typeof subagentFace?.submit)
-  check('(k) the subagent control renders nothing',
-    slot.component({ t: key => key, useGuard: () => undefined, submit: subagentFace.submit }) === null)
+  check('(k) the subagent control renders nothing', renderControl(undefined, subagentFace.submit) === null)
 
   // The catch arm must also hide the control, not offer a dead write path.
   clientPlugin.apply(throwingCtx)
   const thrownFace = slot.options.inject('session-3')
   check('(k) the caught unmaterialized session gets no write path',
     thrownFace !== undefined && typeof thrownFace.submit !== 'function', typeof thrownFace?.submit)
-  check('(k) the caught session control renders nothing',
-    slot.component({ t: key => key, useGuard: () => undefined, submit: thrownFace.submit }) === null)
+  check('(k) the caught session control renders nothing', renderControl(undefined, thrownFace.submit) === null)
 }
 
 console.log(`\n${failed === 0 ? 'PASS' : 'FAIL'} — ${passed} passed, ${failed} failed`)
