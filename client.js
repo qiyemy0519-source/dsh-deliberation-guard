@@ -1,12 +1,18 @@
 /**
- * Deliberation-guard browser half: the per-conversation long-thinking switch and
- * the patience-budget picker in the composer tool row.
+ * Deliberation-guard browser half: one compact capsule in the composer tool row
+ * holding the per-conversation long-thinking toggle and the patience-budget
+ * picker, so the two settings read as one feature.
  *
  * Plain ESM, no build step: the module loader calls this factory lazily and React
  * comes from the browser module table. Every write submits the host `/guard`
  * command, so the session log stays the single source of truth; the projection
  * push is the only confirmation this component renders. Nothing here reaches
  * `ctx.remote` or another plugin's internals.
+ *
+ * The chrome is built only from host theme tokens and host scales, and it is
+ * installed as a scoped stylesheet rather than inline styles, because the design
+ * needs `:hover`, `:disabled` and `prefers-reduced-motion` states that inline
+ * styles cannot express.
  *
  * The slot registration's `inject` factory NEVER throws: DSH retires a slot
  * entry whose factory throws for every later session too, so a session without a
@@ -49,26 +55,39 @@ window.__ModuleLoader__.load({
       'control.title': 'Per-conversation deliberation guard',
     }
 
-    /** Shared chrome for both controls, drawn from the host theme aliases. */
-    const BASE_CONTROL = {
-      height: 28,
-      padding: '0 8px',
-      border: '0.5px solid var(--dsw-alias-border-l3)',
-      borderRadius: 6,
-      background: 'var(--dsw-alias-bg-layer-2)',
-      color: 'var(--dsw-alias-label-secondary)',
-      font: 'inherit',
-      fontSize: 12,
-      lineHeight: 1,
-      cursor: 'pointer',
-    }
+    /**
+     * Control chrome, scoped under `.dg-` and built only from host theme tokens.
+     * Every value is on a host scale: radius `--dsw-radius-sm` (8px, the host's
+     * compact-control radius), the 12px/18px compact type step, 4px/8px spacing,
+     * and `background-color 100ms` for state changes. The resting fill is
+     * `--dsw-specific-selector` rather than `--dsw-alias-bg-layer-2`, because the
+     * latter resolves to the same value as the composer card in both themes and
+     * would leave the control without a visible body.
+     */
+    const CONTROL_CSS = `
+.dg-guard{display:inline-flex;align-items:stretch;height:28px;flex:none;overflow:hidden;border:0.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-specific-selector)}
+.dg-guard>*+*{border-left:0.5px solid var(--dsw-alias-border-l3)}
+.dg-guard button,.dg-guard select{appearance:none;-webkit-appearance:none;border:0;background:transparent;margin:0;height:100%;padding:0 8px;display:inline-flex;align-items:center;gap:4px;font-family:inherit;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background-color 100ms var(--ds-ease-in-out,cubic-bezier(0.4,0,0.2,1)),color 100ms var(--ds-ease-in-out,cubic-bezier(0.4,0,0.2,1))}
+.dg-guard button:hover,.dg-guard select:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dg-guard button[aria-pressed="true"]{background:var(--dsw-alias-button-ghost-active-fill);color:var(--dsw-alias-label-primary);box-shadow:inset 0 0 0 0.5px var(--dsw-alias-button-ghost-active-border)}
+.dg-guard button[aria-pressed="true"]:hover{background:var(--dsw-alias-button-ghost-active-fill)}
+.dg-dot{width:6px;height:6px;flex:none;border:1.25px solid currentColor;border-radius:999px;box-sizing:border-box}
+.dg-guard button[aria-pressed="true"] .dg-dot{background:currentColor}
+.dg-budget{display:inline-flex;align-items:center}
+.dg-select{padding-right:4px}
+.dg-guard select:disabled{color:var(--dsw-alias-label-tertiary);cursor:default}
+.dg-guard select:disabled:hover{background:transparent;color:var(--dsw-alias-label-tertiary)}
+.dg-chev{width:12px;height:12px;flex:none;margin-left:-6px;pointer-events:none}
+@media (prefers-reduced-motion:reduce){.dg-guard button,.dg-guard select{transition:none}}
+`
 
     /**
-     * One compact composer control: the long-thinking toggle plus the patience
-     * budget picker. The picker stays visible but inert while long thinking is on,
-     * so the two facts remain legible together.
+     * One compact composer control: a single capsule holding the long-thinking
+     * toggle and the patience-budget picker, so the two settings read as one
+     * feature instead of two unrelated widgets. The picker stays visible but
+     * inert while long thinking is on, keeping both facts legible together.
      * @param props - renderer-derived props: `t`, `useGuard`, and `submit`.
-     * @returns the control element, or `null` when neither capability resolves.
+     * @returns the control element, or `null` when no write path resolves.
      */
     function GuardControl(props) {
       const t = props.t
@@ -86,38 +105,45 @@ window.__ModuleLoader__.load({
         submit(value === 'default' ? '/guard budget default' : `/guard budget ${value}`)
       }
 
-      return h('div', {
-        style: { display: 'flex', alignItems: 'center', gap: 6 },
-        title: t('control.title'),
-      }, [
+      return h('span', { className: 'dg-guard', title: t('control.title') }, [
         h('button', {
           key: 'long',
           type: 'button',
           onClick: toggleLong,
           'aria-pressed': long,
           title: long ? t('long.on.hint') : t('long.off.hint'),
-          style: long
-            ? {
-              ...BASE_CONTROL,
-              background: 'var(--dsw-alias-button-primary-fill)',
-              color: 'var(--dsw-alias-label-primary-inverted)',
-              borderColor: 'var(--dsw-alias-border-selected)',
-            }
-            : BASE_CONTROL,
-        }, t('long.label')),
-        h('select', {
-          key: 'budget',
-          value: budgetMs === null ? 'default' : String(budgetMs),
-          onChange: pickBudget,
-          disabled: long,
-          'aria-label': t('budget.label'),
-          title: long ? t('budget.inert.hint') : t('budget.label'),
-          style: long ? { ...BASE_CONTROL, opacity: 0.45, cursor: 'default' } : BASE_CONTROL,
         }, [
-          h('option', { key: 'default', value: 'default' }, t('budget.default')),
-          ...BUDGET_PRESETS.map(([label, ms]) => h('option', {
-            key: label, value: String(ms),
-          }, `${label} ${Math.round(ms / 1000)}s`)),
+          h('span', { key: 'dot', className: 'dg-dot' }),
+          t('long.label'),
+        ]),
+        h('span', { key: 'budget', className: 'dg-budget' }, [
+          h('select', {
+            key: 'select',
+            className: 'dg-select',
+            value: budgetMs === null ? 'default' : String(budgetMs),
+            onChange: pickBudget,
+            disabled: long,
+            'aria-label': t('budget.label'),
+            title: long ? t('budget.inert.hint') : t('budget.label'),
+          }, [
+            h('option', { key: 'default', value: 'default' }, t('budget.default')),
+            ...BUDGET_PRESETS.map(([label, ms]) => h('option', {
+              key: label, value: String(ms),
+            }, `${label} ${Math.round(ms / 1000)}s`)),
+          ]),
+          h('svg', {
+            key: 'chev',
+            className: 'dg-chev',
+            viewBox: '0 0 12 12',
+            fill: 'none',
+            'aria-hidden': true,
+          }, h('path', {
+            d: 'M3 4.5 6 7.5 9 4.5',
+            stroke: 'currentColor',
+            strokeWidth: 1.25,
+            strokeLinecap: 'round',
+            strokeLinejoin: 'round',
+          })),
         ]),
       ])
     }
@@ -130,6 +156,18 @@ window.__ModuleLoader__.load({
        */
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'deliberation-guard: locale dictionaries')
+
+        // Component-local stylesheet: installed once per plugin load and removed on
+        // unload, so nothing outlives the fiber and no session duplicates it. A
+        // host without a document (a non-browser embedding) skips it and keeps the
+        // control functional, just unstyled.
+        ctx.effect(() => {
+          if (typeof document === 'undefined') return undefined
+          const style = document.createElement('style')
+          style.textContent = CONTROL_CSS
+          document.head.append(style)
+          return () => { style.remove() }
+        }, 'deliberation-guard: control styles')
 
         const sessions = ctx.sessions
         const submit = (sessionId, line) => {

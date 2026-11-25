@@ -635,10 +635,20 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
 
   let slot = undefined
   const localeRegistrations = []
+  const clientEffects = []
+  const styleElements = []
+  const previousDocument = globalThis.document
+  globalThis.document = {
+    head: { append: element => styleElements.push(element) },
+    createElement: () => ({
+      textContent: '',
+      remove() { const at = styleElements.indexOf(this); if (at >= 0) styleElements.splice(at, 1) },
+    }),
+  }
   const fakeReact = { createElement: (type, props, children) => ({ type, props: props ?? {}, children }) }
   const clientPlugin = entry.factory(name => (name === 'react' ? fakeReact : undefined))
   const clientCtx = {
-    effect: fn => fn(),
+    effect: (fn) => { const cleanup = fn(); if (typeof cleanup === 'function') clientEffects.push(cleanup); return cleanup },
     locale: { register: (ns, dicts) => { localeRegistrations.push([ns, dicts]); return () => {} } },
     sessions: {
       binding: () => undefined,
@@ -650,6 +660,7 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
     },
   }
   clientPlugin.apply(clientCtx)
+  check('(k) one plugin load installs exactly one stylesheet', styleElements.length === 1, String(styleElements.length))
   check('(k) the client registers into conversation.input.right', slot?.options?.name === 'conversation.input.right', String(slot?.options?.name))
   check('(k) the client registration declares the locale namespace', slot?.options?.locale === 'deliberation.guard', String(slot?.options?.locale))
   check('(k) the client registers its dictionaries under the slot namespace',
@@ -671,15 +682,18 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
   check('(k) the slot inject factory never throws on an unmaterialized session', safe !== undefined && typeof safe?.hooks?.guard?.getSnapshot === 'function')
 
   const element = slot.component({ t: key => key, useGuard: select => select({ long: true, budgetMs: null }), submit: () => {} })
-  check('(k) the control renders a toggle and a budget picker', element !== null && element.children.length === 2, JSON.stringify(element?.children?.length))
-  check('(k) the budget picker is inert while long thinking is on', element.children[1].props.disabled === true)
+  check('(k) the control renders one capsule holding both settings', element !== null && element.props.className === 'dg-guard' && element.children.length === 2, JSON.stringify(element?.children?.length))
+  const elementSelect = element.children[1].children[0]
+  check('(k) the budget picker is inert while long thinking is on', elementSelect.props.disabled === true)
   check('(k) the toggle reports its pressed state', element.children[0].props['aria-pressed'] === true)
+  check('(k) the toggle carries a shape-based state dot', element.children[0].children[0].props.className === 'dg-dot')
+  check('(k) the picker carries a chevron instead of native select chrome', element.children[1].children[1].props.className === 'dg-chev')
 
   const relaxed = slot.component({ t: key => key, useGuard: select => select({ long: false, budgetMs: 30000 }), submit: () => {} })
-  check('(k) the budget picker is enabled with long thinking off', relaxed.children[1].props.disabled === false)
-  check('(k) the picker reflects the pushed budget', relaxed.children[1].props.value === '30000', String(relaxed.children[1].props.value))
+  check('(k) the budget picker is enabled with long thinking off', relaxed.children[1].children[0].props.disabled === false)
+  check('(k) the picker reflects the pushed budget', relaxed.children[1].children[0].props.value === '30000', String(relaxed.children[1].children[0].props.value))
   const bare = slot.component({ t: key => key, useGuard: () => undefined, submit: () => {} })
-  check('(k) the control shows the host default before the projection arrives', bare.children[1].props.value === 'default', String(bare.children[1].props.value))
+  check('(k) the control shows the host default before the projection arrives', bare.children[1].children[0].props.value === 'default', String(bare.children[1].children[0].props.value))
   const unwritable = slot.component({ t: key => key, useGuard: () => undefined, submit: undefined })
   check('(k) the control renders nothing without a write path', unwritable === null)
 
@@ -689,14 +703,30 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
   const writable = slot.component({
     t: key => key, useGuard: select => select({ long: false, budgetMs: 30000 }), submit: line => submitted.push(line),
   })
-  writable.children[1].props.onChange({ target: { value: 'default' } })
+  const writableSelect = writable.children[1].children[0]
+  writableSelect.props.onChange({ target: { value: 'default' } })
   check('(k) the Default row clears the override instead of pinning a value', submitted[0] === '/guard budget default', String(submitted[0]))
-  writable.children[1].props.onChange({ target: { value: '120000' } })
+  writableSelect.props.onChange({ target: { value: '120000' } })
   check('(k) a preset row submits its milliseconds', submitted[1] === '/guard budget 120000', String(submitted[1]))
-  writable.children[1].props.onChange({ target: { value: '90000' } })
+  writableSelect.props.onChange({ target: { value: '90000' } })
   check('(k) the 90s preset row submits its milliseconds', submitted[2] === '/guard budget 90000', String(submitted[2]))
-  const presetRows = writable.children[1].children.map(option => option.props.value)
+  const presetRows = writableSelect.children.map(option => option.props.value)
   check('(k) the picker offers the 90s preset', presetRows.includes('90000'), JSON.stringify(presetRows))
+
+  // The redesign: chrome is a scoped stylesheet of host tokens rather than inline
+  // styles, because hover, disabled and reduced-motion states cannot be expressed
+  // inline. Each check below pins one defect the design research found.
+  const css = styleElements[0]?.textContent ?? ''
+  check('(k) every rule is scoped under .dg-', css.includes('.dg-guard') && !/(^|})\s*(button|select)\s*\{/.test(css))
+  check('(k) the capsule uses the host compact-control radius, not an off-scale value', css.includes('var(--dsw-radius-sm') && !css.includes('border-radius:6px'))
+  check('(k) the pressed state uses the host ghost-active tokens', css.includes('--dsw-alias-button-ghost-active-fill') && css.includes('--dsw-alias-button-ghost-active-border'))
+  check('(k) the resting fill is distinguishable from the composer card', css.includes('var(--dsw-specific-selector)') && !css.includes('--dsw-alias-bg-layer-2'))
+  check('(k) the native select chrome is removed', css.includes('appearance:none'))
+  check('(k) the compact type step replaces the old line-height:1', css.includes('font-size:12px') && css.includes('line-height:18px') && !css.includes('line-height:1;'))
+  check('(k) state changes are animated and reduced motion is honoured', css.includes('transition:background-color 100ms') && css.includes('prefers-reduced-motion'))
+  check('(k) the stylesheet is removed when the plugin unloads', (() => { for (const cleanup of clientEffects) cleanup(); return styleElements.length === 0 })())
+  if (previousDocument === undefined) delete globalThis.document
+  else globalThis.document = previousDocument
   const clientSource = await readFile(new URL('../client.js', import.meta.url), 'utf8')
   check('(k) client.js carries no duplicated host default constant', !clientSource.includes('DEFAULT_BUDGET_MS'))
   check('(k) client.js never submits a hardcoded millisecond default', !/budget 45000/u.test(clientSource))

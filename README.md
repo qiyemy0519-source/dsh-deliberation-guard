@@ -39,10 +39,10 @@ agent.steer(<nudge UserMessage>)                     // 再把提示词交给最
 **先完全退出 DeepSeek Harness。** Harness 运行时配置是锁住的，`dsh plugin` 写不进去；装完再重启。
 
 ```
-dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.3.0"
+dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.4.0"
 ```
 
-`#v0.3.0` 是版本 tag，可用 tag 见仓库的 **Tags** 页面；不写 `#...` 时 pnpm 取默认分支的最新提交。桌面版把 `--profile web` 换成 `--profile desktop`；也可以在 **插件 → 添加插件** 里粘贴同一个地址。装完重启 Harness，输入框右侧会出现「长思考」开关和耐心预算下拉。
+`#v0.4.0` 是版本 tag，可用 tag 见仓库的 **Tags** 页面；不写 `#...` 时 pnpm 取默认分支的最新提交。桌面版把 `--profile web` 换成 `--profile desktop`；也可以在 **插件 → 添加插件** 里粘贴同一个地址。装完重启 Harness，输入框右侧会出现「长思考」开关和耐心预算下拉。
 
 ### 更新到新版本
 
@@ -87,7 +87,24 @@ dsh plugin --profile web add "link:D:\deepseek\deepseek-harness\.local-plugins\d
 - **长思考开关**：打开后，**这个会话永远不会被自动打断**（其余触发条件全部作废）。
 - **耐心预算**：只覆盖这个会话的 `budgetMs`，也就是自动模式的耐心值。
 
-输入框右侧（`conversation.input.right`）有一个按会话的控制：一个「长思考」按钮加一个「耐心预算」下拉。它读的是本会话的投影值，写的时候**只走 `/guard` 命令**——所以会话日志始终是唯一事实来源，界面显示的是命令落库后推回来的值，而不是本地猜测。下拉里的「默认」提交的是 `/guard budget default`（**清除**覆盖），不是把当前默认值写死：客户端拿不到 `Config.budgetMs`，写死一个数字会在别的部署里静默算错耐心值。子代理会话没有自己的输入框，因此整个控件不渲染。
+输入框右侧（`conversation.input.right`）有一个按会话的控制：**一个胶囊里装两个设置** —— 左边「长思考」开关，右边「耐心预算」下拉。它读的是本会话的投影值，写的时候**只走 `/guard` 命令**——所以会话日志始终是唯一事实来源，界面显示的是命令落库后推回来的值，而不是本地猜测。下拉里的「默认」提交的是 `/guard budget default`（**清除**覆盖），不是把当前默认值写死：客户端拿不到 `Config.budgetMs`，写死一个数字会在别的部署里静默算错耐心值。子代理会话没有自己的输入框，因此整个控件不渲染。
+
+### 外观
+
+控件完全由宿主的主题令牌和刻度构成，看上去像 DSH 自带的功能，不引入自己的配色或字体：
+
+| 决定 | 取值 | 理由 |
+| --- | --- | --- |
+| 形态 | 一个胶囊包住两个设置 | 两个独立方块并排会被读成两个不相干的控件；胶囊读成一个功能 |
+| 圆角 | `--dsw-radius-sm`（8px） | 宿主紧凑控件的圆角；原来硬编码的 `6px` 不在宿主的 4/8/12/16/20/28 刻度上 |
+| 静息底色 | `--dsw-specific-selector` | 原来的 `--dsw-alias-bg-layer-2` 在浅色和深色下都**与输入卡片同色**，控件没有可见的「身体」 |
+| 选中态 | `--dsw-alias-button-ghost-active-fill` + `-ghost-active-border` | 宿主 `Pill.active` 的写法；原来用的 `--dsw-alias-label-primary-inverted` 在深色下与宿主主按钮的前景色不一致 |
+| 字号 | 12px / 18px | 宿主紧凑档（`Button.sm`）；原来的 `line-height: 1` 不在任何一档上 |
+| 下拉 | `appearance: none` + 自绘 chevron | 原生 `<select>` 会带浏览器自己的外观，与宿主控件不一致 |
+| 动效 | `background-color 100ms`，`prefers-reduced-motion` 下关闭 | 宿主的状态切换时长；原来没有任何过渡，状态是硬切 |
+| 状态提示 | 圆点：空心=关，实心=开 | 不只靠颜色传达状态 |
+
+无障碍：开关是 `<button aria-pressed>`，下拉是带 `aria-label` 的原生 `<select>`；焦点沿用宿主的全局 focus ring（不自己设 outline）。这套样式是一份作用域在 `.dg-` 下的样式表，随插件卸载移除；控件文字对比度在浅色和深色下都通过 WCAG AA。
 
 命令语法（`rawInput` 会原样记进 `command/run`，投影就是从这条记录回放出状态的）：
 
