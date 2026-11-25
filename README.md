@@ -39,10 +39,10 @@ agent.steer(<nudge UserMessage>)                     // 再把提示词交给最
 **先完全退出 DeepSeek Harness。** Harness 运行时配置是锁住的，`dsh plugin` 写不进去；装完再重启。
 
 ```
-dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.4.0"
+dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0.5.0"
 ```
 
-`#v0.4.0` 是版本 tag，可用 tag 见仓库的 **Tags** 页面；不写 `#...` 时 pnpm 取默认分支的最新提交。桌面版把 `--profile web` 换成 `--profile desktop`；也可以在 **插件 → 添加插件** 里粘贴同一个地址。装完重启 Harness，输入框右侧会出现「长思考」开关和耐心预算下拉。
+`#v0.5.0` 是版本 tag，可用 tag 见仓库的 **Tags** 页面；不写 `#...` 时 pnpm 取默认分支的最新提交。桌面版把 `--profile web` 换成 `--profile desktop`；也可以在 **插件 → 添加插件** 里粘贴同一个地址。装完重启 Harness，输入框右侧会出现「长思考」开关和耐心预算下拉。
 
 ### 更新到新版本
 
@@ -91,20 +91,23 @@ dsh plugin --profile web add "link:D:\deepseek\deepseek-harness\.local-plugins\d
 
 ### 外观
 
-控件完全由宿主的主题令牌和刻度构成，看上去像 DSH 自带的功能，不引入自己的配色或字体：
+控件**不自己发明形态**：它用的就是宿主 composer 里那两个控件的同一套 chrome，规则逐条抄自宿主源码 —— chip 外观、hover、focus ring 来自模型选择器的 trigger（`ui-model-selection/src/client/ModelSelect.module.css` 的 `.trigger`），原生 select 的重置与自绘 chevron 来自 composer 的 `.select`（`ui-conversation/src/client/skeleton/InputBar.module.css`），选中态沿用宿主 `Pill.active`：
 
-| 决定 | 取值 | 理由 |
-| --- | --- | --- |
-| 形态 | 一个胶囊包住两个设置 | 两个独立方块并排会被读成两个不相干的控件；胶囊读成一个功能 |
-| 圆角 | `--dsw-radius-sm`（8px） | 宿主紧凑控件的圆角；原来硬编码的 `6px` 不在宿主的 4/8/12/16/20/28 刻度上 |
-| 静息底色 | `--dsw-specific-selector` | 原来的 `--dsw-alias-bg-layer-2` 在浅色和深色下都**与输入卡片同色**，控件没有可见的「身体」 |
-| 选中态 | `--dsw-alias-button-ghost-active-fill` + `-ghost-active-border` | 宿主 `Pill.active` 的写法；原来用的 `--dsw-alias-label-primary-inverted` 在深色下与宿主主按钮的前景色不一致 |
-| 字号 | 12px / 18px | 宿主紧凑档（`Button.sm`）；原来的 `line-height: 1` 不在任何一档上 |
-| 下拉 | `appearance: none` + 自绘 chevron | 原生 `<select>` 会带浏览器自己的外观，与宿主控件不一致 |
-| 动效 | `background-color 100ms`，`prefers-reduced-motion` 下关闭 | 宿主的状态切换时长；原来没有任何过渡，状态是硬切 |
-| 状态提示 | 圆点：空心=关，实心=开 | 不只靠颜色传达状态 |
+| 属性 | 取值（与宿主一致） |
+| --- | --- |
+| 尺寸 | `height: 28px` —— 与模型选择器、附件圆钮同一行高 |
+| 圆角 | `var(--dsw-radius-sm)`（8px） |
+| 底色 | 透明；只有 hover 才上 `--dsw-alias-interactive-bg-hover` |
+| 字体 | 13px / 20px，weight 400（字体族由宿主全局 `button, select { font-family: inherit }` 提供） |
+| 选中态 | `--dsw-alias-button-ghost-active-fill` + `inset 0 0 0 1px var(--dsw-alias-button-ghost-active-border)`，文字转 `--dsw-alias-label-primary` |
+| 焦点 | `0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary))`，与模型选择器同一写法 |
+| 禁用 | `opacity: 0.5; cursor: default` |
+| 下拉 | `appearance: none` + 宿主同一张 chevron data-URI，`background-position: right 4px center` |
+| 间距 | 行内 `gap: 12px`；在宿主的 `@container (max-width: 560px)` 下收成 8px |
 
-无障碍：开关是 `<button aria-pressed>`，下拉是带 `aria-label` 的原生 `<select>`；焦点沿用宿主的全局 focus ring（不自己设 outline）。这套样式是一份作用域在 `.dg-` 下的样式表，随插件卸载移除；控件文字对比度在浅色和深色下都通过 WCAG AA。
+早先的版本自己加了一圈边框和一个胶囊底色 —— 宿主 composer 的控件根本不是那个形态（它们是透明的 ghost chip），那圈边框正是「看起来不像 DSH」的来源。
+
+无障碍：开关是 `<button aria-pressed>`，下拉是带 `aria-label` 的原生 `<select>`。样式是作用域在 `.dg-` 下的一份样式表，随插件卸载移除；`design_audit` 对发货 CSS 实测 28 个元素零违规、字号单一 13px、浅色与深色下文字均通过 WCAG AA。
 
 命令语法（`rawInput` 会原样记进 `command/run`，投影就是从这条记录回放出状态的）：
 

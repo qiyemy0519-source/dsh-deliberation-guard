@@ -56,36 +56,35 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Control chrome, scoped under `.dg-` and built only from host theme tokens.
-     * Every value is on a host scale: radius `--dsw-radius-sm` (8px, the host's
-     * compact-control radius), the 12px/18px compact type step, 4px/8px spacing,
-     * and `background-color 100ms` for state changes. The resting fill is
-     * `--dsw-specific-selector` rather than `--dsw-alias-bg-layer-2`, because the
-     * latter resolves to the same value as the composer card in both themes and
-     * would leave the control without a visible body.
+     * Control chrome, copied rule-for-rule from the host composer's own chips so
+     * this control is indistinguishable from them: the model-selection trigger
+     * (`ui-model-selection/src/client/ModelSelect.module.css` `.trigger`) supplies
+     * the chip chrome, hover and focus ring, and the composer's `.select`
+     * (`ui-conversation/src/client/skeleton/InputBar.module.css`) supplies the
+     * native-select reset and its drawn chevron. The selected state follows the
+     * host `Pill.active` treatment. The host's global reset already gives form
+     * controls the app font (`client/web/src/base.css`), so no family is set here.
      */
     const CONTROL_CSS = `
-.dg-guard{display:inline-flex;align-items:stretch;height:28px;flex:none;overflow:hidden;border:0.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-specific-selector)}
-.dg-guard>*+*{border-left:0.5px solid var(--dsw-alias-border-l3)}
-.dg-guard button,.dg-guard select{appearance:none;-webkit-appearance:none;border:0;background:transparent;margin:0;height:100%;padding:0 8px;display:inline-flex;align-items:center;gap:4px;font-family:inherit;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background-color 100ms var(--ds-ease-in-out,cubic-bezier(0.4,0,0.2,1)),color 100ms var(--ds-ease-in-out,cubic-bezier(0.4,0,0.2,1))}
-.dg-guard button:hover,.dg-guard select:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
-.dg-guard button[aria-pressed="true"]{background:var(--dsw-alias-button-ghost-active-fill);color:var(--dsw-alias-label-primary);box-shadow:inset 0 0 0 0.5px var(--dsw-alias-button-ghost-active-border)}
-.dg-guard button[aria-pressed="true"]:hover{background:var(--dsw-alias-button-ghost-active-fill)}
-.dg-dot{width:6px;height:6px;flex:none;border:1.25px solid currentColor;border-radius:999px;box-sizing:border-box}
-.dg-guard button[aria-pressed="true"] .dg-dot{background:currentColor}
-.dg-budget{display:inline-flex;align-items:center}
-.dg-select{padding-right:4px}
-.dg-guard select:disabled{color:var(--dsw-alias-label-tertiary);cursor:default}
-.dg-guard select:disabled:hover{background:transparent;color:var(--dsw-alias-label-tertiary)}
-.dg-chev{width:12px;height:12px;flex:none;margin-left:-6px;pointer-events:none}
-@media (prefers-reduced-motion:reduce){.dg-guard button,.dg-guard select{transition:none}}
+.dg-guard{display:inline-flex;align-items:center;gap:12px;min-width:0}
+.dg-toggle{display:inline-flex;align-items:center;gap:4px;min-width:0;height:28px;padding:0 8px;border:none;border-radius:var(--dsw-radius-sm);outline:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;font-weight:400;white-space:nowrap;cursor:pointer}
+.dg-toggle[aria-pressed="true"]{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-button-ghost-active-fill);box-shadow:inset 0 0 0 1px var(--dsw-alias-button-ghost-active-border)}
+.dg-toggle:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}
+.dg-toggle[aria-pressed="true"]:focus-visible{box-shadow:inset 0 0 0 1px var(--dsw-alias-button-ghost-active-border),0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}
+.dg-toggle:disabled{opacity:0.5;cursor:default}
+.dg-select{max-width:220px;height:28px;padding:0 20px 0 8px;border:none;border-radius:var(--dsw-radius-sm);outline:none;background-color:transparent;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 4px center;background-size:12px 12px;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;font-weight:400;white-space:nowrap;cursor:pointer;appearance:none}
+.dg-select:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}
+.dg-select:disabled{opacity:0.5;cursor:default}
+@media (hover:hover){.dg-toggle:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.dg-select:hover:not(:disabled){background-color:var(--dsw-alias-interactive-bg-hover)}}
+@container (max-width:560px){.dg-guard{gap:8px}}
 `
 
     /**
-     * One compact composer control: a single capsule holding the long-thinking
-     * toggle and the patience-budget picker, so the two settings read as one
-     * feature instead of two unrelated widgets. The picker stays visible but
-     * inert while long thinking is on, keeping both facts legible together.
+     * The composer control: the long-thinking toggle and the patience-budget
+     * picker, rendered as two host chips in a plain flex row — the same chrome,
+     * height, radius, type step and gap the composer's own controls use. The
+     * picker stays visible but disabled while long thinking is on, keeping both
+     * facts legible together.
      * @param props - renderer-derived props: `t`, `useGuard`, and `submit`.
      * @returns the control element, or `null` when no write path resolves.
      */
@@ -109,41 +108,24 @@ window.__ModuleLoader__.load({
         h('button', {
           key: 'long',
           type: 'button',
+          className: 'dg-toggle',
           onClick: toggleLong,
           'aria-pressed': long,
           title: long ? t('long.on.hint') : t('long.off.hint'),
+        }, t('long.label')),
+        h('select', {
+          key: 'budget',
+          className: 'dg-select',
+          value: budgetMs === null ? 'default' : String(budgetMs),
+          onChange: pickBudget,
+          disabled: long,
+          'aria-label': t('budget.label'),
+          title: long ? t('budget.inert.hint') : t('budget.label'),
         }, [
-          h('span', { key: 'dot', className: 'dg-dot' }),
-          t('long.label'),
-        ]),
-        h('span', { key: 'budget', className: 'dg-budget' }, [
-          h('select', {
-            key: 'select',
-            className: 'dg-select',
-            value: budgetMs === null ? 'default' : String(budgetMs),
-            onChange: pickBudget,
-            disabled: long,
-            'aria-label': t('budget.label'),
-            title: long ? t('budget.inert.hint') : t('budget.label'),
-          }, [
-            h('option', { key: 'default', value: 'default' }, t('budget.default')),
-            ...BUDGET_PRESETS.map(([label, ms]) => h('option', {
-              key: label, value: String(ms),
-            }, `${label} ${Math.round(ms / 1000)}s`)),
-          ]),
-          h('svg', {
-            key: 'chev',
-            className: 'dg-chev',
-            viewBox: '0 0 12 12',
-            fill: 'none',
-            'aria-hidden': true,
-          }, h('path', {
-            d: 'M3 4.5 6 7.5 9 4.5',
-            stroke: 'currentColor',
-            strokeWidth: 1.25,
-            strokeLinecap: 'round',
-            strokeLinejoin: 'round',
-          })),
+          h('option', { key: 'default', value: 'default' }, t('budget.default')),
+          ...BUDGET_PRESETS.map(([label, ms]) => h('option', {
+            key: label, value: String(ms),
+          }, `${label} ${Math.round(ms / 1000)}s`)),
         ]),
       ])
     }

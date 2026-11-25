@@ -682,18 +682,16 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
   check('(k) the slot inject factory never throws on an unmaterialized session', safe !== undefined && typeof safe?.hooks?.guard?.getSnapshot === 'function')
 
   const element = slot.component({ t: key => key, useGuard: select => select({ long: true, budgetMs: null }), submit: () => {} })
-  check('(k) the control renders one capsule holding both settings', element !== null && element.props.className === 'dg-guard' && element.children.length === 2, JSON.stringify(element?.children?.length))
-  const elementSelect = element.children[1].children[0]
-  check('(k) the budget picker is inert while long thinking is on', elementSelect.props.disabled === true)
+  check('(k) the control renders a chip row with both settings', element !== null && element.props.className === 'dg-guard' && element.children.length === 2, JSON.stringify(element?.children?.length))
+  check('(k) the budget picker is inert while long thinking is on', element.children[1].props.disabled === true)
   check('(k) the toggle reports its pressed state', element.children[0].props['aria-pressed'] === true)
-  check('(k) the toggle carries a shape-based state dot', element.children[0].children[0].props.className === 'dg-dot')
-  check('(k) the picker carries a chevron instead of native select chrome', element.children[1].children[1].props.className === 'dg-chev')
+  check('(k) both elements carry the host chip classes', element.children[0].props.className === 'dg-toggle' && element.children[1].props.className === 'dg-select')
 
   const relaxed = slot.component({ t: key => key, useGuard: select => select({ long: false, budgetMs: 30000 }), submit: () => {} })
-  check('(k) the budget picker is enabled with long thinking off', relaxed.children[1].children[0].props.disabled === false)
-  check('(k) the picker reflects the pushed budget', relaxed.children[1].children[0].props.value === '30000', String(relaxed.children[1].children[0].props.value))
+  check('(k) the budget picker is enabled with long thinking off', relaxed.children[1].props.disabled === false)
+  check('(k) the picker reflects the pushed budget', relaxed.children[1].props.value === '30000', String(relaxed.children[1].props.value))
   const bare = slot.component({ t: key => key, useGuard: () => undefined, submit: () => {} })
-  check('(k) the control shows the host default before the projection arrives', bare.children[1].children[0].props.value === 'default', String(bare.children[1].children[0].props.value))
+  check('(k) the control shows the host default before the projection arrives', bare.children[1].props.value === 'default', String(bare.children[1].props.value))
   const unwritable = slot.component({ t: key => key, useGuard: () => undefined, submit: undefined })
   check('(k) the control renders nothing without a write path', unwritable === null)
 
@@ -703,7 +701,7 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
   const writable = slot.component({
     t: key => key, useGuard: select => select({ long: false, budgetMs: 30000 }), submit: line => submitted.push(line),
   })
-  const writableSelect = writable.children[1].children[0]
+  const writableSelect = writable.children[1]
   writableSelect.props.onChange({ target: { value: 'default' } })
   check('(k) the Default row clears the override instead of pinning a value', submitted[0] === '/guard budget default', String(submitted[0]))
   writableSelect.props.onChange({ target: { value: '120000' } })
@@ -713,17 +711,20 @@ function longReasoningAttempt(harness, agent, attemptId = 'a1') {
   const presetRows = writableSelect.children.map(option => option.props.value)
   check('(k) the picker offers the 90s preset', presetRows.includes('90000'), JSON.stringify(presetRows))
 
-  // The redesign: chrome is a scoped stylesheet of host tokens rather than inline
-  // styles, because hover, disabled and reduced-motion states cannot be expressed
-  // inline. Each check below pins one defect the design research found.
+  // The chrome copies the host composer's own chips rule-for-rule instead of
+  // inventing a shape, so the control is indistinguishable from its neighbours.
+  // Each check below pins one property of that copy.
   const css = styleElements[0]?.textContent ?? ''
   check('(k) every rule is scoped under .dg-', css.includes('.dg-guard') && !/(^|})\s*(button|select)\s*\{/.test(css))
-  check('(k) the capsule uses the host compact-control radius, not an off-scale value', css.includes('var(--dsw-radius-sm') && !css.includes('border-radius:6px'))
-  check('(k) the pressed state uses the host ghost-active tokens', css.includes('--dsw-alias-button-ghost-active-fill') && css.includes('--dsw-alias-button-ghost-active-border'))
-  check('(k) the resting fill is distinguishable from the composer card', css.includes('var(--dsw-specific-selector)') && !css.includes('--dsw-alias-bg-layer-2'))
-  check('(k) the native select chrome is removed', css.includes('appearance:none'))
-  check('(k) the compact type step replaces the old line-height:1', css.includes('font-size:12px') && css.includes('line-height:18px') && !css.includes('line-height:1;'))
-  check('(k) state changes are animated and reduced motion is honoured', css.includes('transition:background-color 100ms') && css.includes('prefers-reduced-motion'))
+  check('(k) the chip chrome matches the composer model trigger', css.includes('height:28px') && css.includes('border-radius:var(--dsw-radius-sm)') && css.includes('background:transparent') && css.includes('font-size:13px') && css.includes('line-height:20px'))
+  check('(k) no capsule border or fill was invented', !css.includes('border:0.5px solid') && !css.includes('background:var(--dsw-specific-selector)'))
+  check('(k) no off-scale radius survives', !css.includes('border-radius:6px'))
+  check('(k) hover uses the host interactive fill', css.includes('.dg-toggle:hover:not(:disabled)') && css.includes('.dg-select:hover:not(:disabled)') && css.includes('var(--dsw-alias-interactive-bg-hover)'))
+  check('(k) focus uses the host focus ring token', css.includes('var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))'))
+  check('(k) the pressed state follows the host Pill.active treatment', css.includes('--dsw-alias-button-ghost-active-fill') && css.includes('inset 0 0 0 1px var(--dsw-alias-button-ghost-active-border)'))
+  check('(k) the native select chrome is reset and the host chevron is drawn', css.includes('appearance:none') && css.includes('background-image:url("data:image/svg+xml,'))
+  check('(k) disabled matches the host opacity treatment', css.includes('opacity:0.5'))
+  check('(k) the row gap is the host 12px, collapsing to 8px in the host container query', css.includes('gap:12px') && css.includes('@container (max-width:560px)') && css.includes('gap:8px'))
   check('(k) the stylesheet is removed when the plugin unloads', (() => { for (const cleanup of clientEffects) cleanup(); return styleElements.length === 0 })())
   if (previousDocument === undefined) delete globalThis.document
   else globalThis.document = previousDocument
