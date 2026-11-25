@@ -46,14 +46,25 @@ dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#v0
 
 ### 更新到新版本
 
-Harness 不会自动更新第三方组合包，而且 pnpm 是按引用解析的：**版本号和引用都没变时，直接再 add 一次不会拉到新提交**。所以更新固定走「卸载 → 按目标 tag 安装 → 重启」：
+Harness **不会自动更新**第三方组合包；而且 pnpm 是按引用解析的 —— **引用没变时再 `add` 一次不会拉到新提交**，它会认为「装的就是这个」。所以更新固定走「卸载 → 按新引用安装 → 完全退出并重启」：
 
-```
+```powershell
 dsh plugin --profile web remove dsh-deliberation-guard
 dsh plugin --profile web add "github:qiyemy0519-source/dsh-deliberation-guard#<目标 tag>"
 ```
 
-把 `#<目标 tag>` 换成要装的版本 tag（如 `v0.2.1`）或提交 SHA。**必须完全退出并重启 Harness** —— 客户端模块只在启动时加载，热重载不会换掉已加载的浏览器代码。
+把 `#<目标 tag>` 换成要装的版本（可用版本见仓库的 **Releases** 页，例如 `v0.6.0`）或提交 SHA。
+
+用 Release 里的 tgz 包时换掉路径即可 —— **同样必须先 remove**，理由一样：
+
+```powershell
+dsh plugin --profile web remove dsh-deliberation-guard
+dsh plugin --profile web add "D:\path\to\dsh-deliberation-guard-<新版本>.tgz"
+```
+
+**为什么必须重启**：客户端模块只在启动时加载，热重载不会换掉已经加载进浏览器的代码。装完请**完全退出** Harness（托盘右键 → 退出）再打开。
+
+**怎么确认现在装的是哪个版本**：**设置 → 插件** 里能看到版本号；或看 profile 清单 `D:\DSH\profiles\web\package.json` 中该条依赖的引用。
 
 ### 本地开发（`link:`）
 
